@@ -327,11 +327,13 @@ def train_end_to_end(
         opt.zero_grad(set_to_none=True)
         pending = 0
 
-        for step, (xb, yb) in enumerate(train_loader, start=1):
-            xb = xb.to(device, non_blocking=True)
-            yb = yb.to(device, non_blocking=True)
+        for step, batch in enumerate(train_loader, start=1):
+            xb = batch[0].to(device, non_blocking=True)
+            yb = batch[1].to(device, non_blocking=True)
+            subject_ids = batch[2].to(device, non_blocking=True) if len(batch) > 2 else None
             if uses_custom:
-                loss, parts = model.training_step(xb, yb, epoch=epoch - 1)
+                loss, parts = model.training_step(xb, yb, epoch=epoch - 1,
+                                                  subject_ids=subject_ids)
             else:
                 loss = F.cross_entropy(model(xb)["logits"], yb)
                 parts = {"ce": float(loss.detach().item())}

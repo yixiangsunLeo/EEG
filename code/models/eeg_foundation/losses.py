@@ -226,3 +226,35 @@ def inter_class_perturbation(z_causal: torch.Tensor, y: torch.Tensor) -> torch.T
             j = other_class[torch.randint(len(other_class), (1,)).item()]
             result[i] = z_causal[j]
     return result
+
+
+# ── Gradient Reversal Layer (for Adversarial Domain Adaptation) ─────────────
+
+class GradientReversalFunction(torch.autograd.Function):
+    """Forward: identity. Backward: negate and scale by lambda."""
+    @staticmethod
+    def forward(ctx, x, lambda_):
+        ctx.lambda_ = lambda_
+        return x.clone()
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        return -ctx.lambda_ * grad_output, None
+
+
+class GradientReversalLayer(nn.Module):
+    """Gradient Reversal Layer (Ganin et al., 2016).
+
+    During forward pass: identity (passes features through unchanged).
+    During backward pass: negates and scales the gradient, forcing the encoder
+    to learn features that fool the domain discriminator.
+    """
+    def __init__(self, lambda_=0.1):
+        super().__init__()
+        self.lambda_ = lambda_
+
+    def forward(self, x):
+        return GradientReversalFunction.apply(x, self.lambda_)
+
+    def extra_repr(self):
+        return f"lambda={self.lambda_}"

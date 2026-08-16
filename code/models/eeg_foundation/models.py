@@ -37,6 +37,7 @@ from .s4_layers import S4Encoder as S4EncoderCore
 from .losses import (
     DINOLoss, ProjectionHead, IBOTHead, DKoleoLoss, PrototypeBank,
     OrthogonalMask, intra_class_perturbation, inter_class_perturbation,
+    GradientReversalLayer,
 )
 
 
@@ -444,6 +445,67 @@ class S4ERP(nn.Module):
         z = self.embedding(x)
         z = self.encoder(z)
         return {"logits": self.classifier(z), "z_inv": z.reshape(z.size(0), -1)}
+
+    def encode(self, x, **kwargs):
+        z = self.embedding(x)
+        z = self.encoder(z)
+        return z.reshape(z.size(0), -1)
+
+
+# ── S4ERP + Adversarial Domain Adaptation ────────────────────────────────────
+
+class S4ERPAdversarial(nn.Module):
+    """S4ERP + Gradient Reversal Layer for subject-invariant feature learning.
+
+    Same backbone as S4ERP (ShallowNetEmbedding + S4Encoder + flatten).
+    Two heads:
+      - classifier: MI task (left/right hand) — same as S4ERP
+      - subject_discriminator: adversarial subject identification via GRL
+
+    The GRL reverses gradients during backprop so the encoder is trained to
+    produce features that fool the subject discriminator — i.e. features that
+    are subject-invariant while still discriminative for the MI task.
+    """
+
+    def __init__(self, config, d_model=128, n_layers=4, state_dim=8,
+                 d_ff=256, dropout=0.1, n_subjects=11, lambda_adv=0.1):
+        super().__init__()
+        self.patch_num = (config.seq_len - 28) // 2 + 1
+        self.embedding = ShallowNetEmbedding(config.num_channels, d_model, dropout)
+        self.encoder = S4EncoderCore(d_model, n_layers, state_dim, d_ff, dropout)
+        self.feature_dim = d_model * self.patch_num
+
+        # Task head (same as S4ERP)
+        self.classifier = nn.Sequential(
+            nn.GELU(), nn.Dropout(dropout),
+            nn.Linear(self.feature_dim, config.num_classes),
+        )
+
+        # Adversarial head: GRL + subject discriminator
+        # Mean-pool over patches to reduce feature_dim (e.g. 62336 -> 128),
+        # keeping the discriminator small and the adversarial gradient stable.
+        self.adv_d_model = d_model
+        self.grl = GradientReversalLayer(lambda_=lambda_adv)
+        self.subject_discriminator = nn.Sequential(
+            nn.Linear(d_model, 128),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(128, n_subjects),
+        )
+
+    def forward(self, x, **kwargs):
+        z = self.embedding(x)
+        z = self.encoder(z)
+        features = z.reshape(z.size(0), -1)
+        logits = self.classifier(features)
+        # Pool patches for adversarial branch: [B, patch_num * d_model] -> [B, d_model]
+        z_pooled = z.mean(dim=1)  # mean over patch dimension
+        subject_logits = self.subject_discriminator(self.grl(z_pooled))
+        return {
+            "logits": logits,
+            "z_inv": features,
+            "subject_logits": subject_logits,
+        }
 
     def encode(self, x, **kwargs):
         z = self.embedding(x)

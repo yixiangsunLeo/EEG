@@ -1,0 +1,11 @@
+# S4ERP-Adv — S4 backbone + flatten pooling + adversarial domain adaptation.
+# Same backbone as s4erp, with an additional GRL + subject discriminator
+# to learn subject-invariant features for cross-subject generalization.
+name: "s4erp_adv"
+d_model: 128
+n_layers: 4
+state_dim: 8
+d_ff: 256
+dropout: 0.1
+n_subjects: 11
+lambda_adv: 0.1

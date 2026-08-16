@@ -43,11 +43,11 @@ data:
 
 # Order matters: the runner trains in this order, so the cheap supervised variant
 # validates the pipeline before the expensive DualCD ones start.
-models: ["s4erp", "dualcd_s4_pos", "dualcd_s4_timepatch", "dualcd_s4_flatten", "dualcd_transformer"]
+models: ["s4erp", "s4erp_adv", "dualcd_s4_pos", "dualcd_s4_timepatch", "dualcd_s4_flatten", "dualcd_transformer"]
 
 cross_subject:
-  protocol: "kfold_subject"      # loso | kfold_subject | holdout
-  n_folds: 5                     # 5 subject-disjoint groups; each is the test group once
+  protocol: "loso"                # loso | kfold_subject | holdout
+  n_folds: 11                     # 5 subject-disjoint groups; each is the test group once
   split_seed: 0                  # fold membership depends only on this, not on train seeds
   val_mode: "subjects"           # subjects = held-out TRAIN subjects (strict, no subject leak)
   val_subject_fraction: 0.15     # ~15% of the remaining subjects used for model selection
@@ -77,6 +77,7 @@ train:
 # Structural hyperparameters per variant (mirrors code/configs/models/<name>.yaml).
 model_params:
   s4erp: {d_model: 128, n_layers: 4, state_dim: 8, d_ff: 256, dropout: 0.1}
+  s4erp_adv: {d_model: 128, n_layers: 4, state_dim: 8, d_ff: 256, dropout: 0.1, n_subjects: 11, lambda_adv: 0.1}
   dualcd_s4_pos: {d_model: 128, n_layers: 4, state_dim: 8, d_ff: 256, dropout: 0.1,
                   lambda_intra: 0.5, dino_out_dim: 256, proto_k: 5,
                   teacher_momentum: 0.996, warmup_epochs: 5,

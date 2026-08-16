@@ -44,6 +44,7 @@ import torch.nn.functional as F
 
 from .models import (
     S4ERP,
+    S4ERPAdversarial,
     UnifiedDINODualCD_S4_Flatten,
     UnifiedDINODualCD_S4_Pos,
     UnifiedDINODualCD_S4_Timepatch,
@@ -53,6 +54,7 @@ from .models import (
 #: variant name -> (class, is_dualcd, default n_layers)
 VARIANTS: Dict[str, Tuple[type, bool, int]] = {
     "s4erp": (S4ERP, False, 4),
+    "s4erp_adv": (S4ERPAdversarial, False, 4),
     "dualcd_s4_pos": (UnifiedDINODualCD_S4_Pos, True, 4),
     "dualcd_s4_timepatch": (UnifiedDINODualCD_S4_Timepatch, True, 4),
     "dualcd_s4_flatten": (UnifiedDINODualCD_S4_Flatten, True, 4),
@@ -62,7 +64,7 @@ VARIANTS: Dict[str, Tuple[type, bool, int]] = {
 VARIANT_NAMES: List[str] = list(VARIANTS)
 
 #: Learning rates recommended by the source package (DualCD is 10x lower).
-DEFAULT_LR = {"s4erp": 1e-3, "_dualcd": 1e-4}
+DEFAULT_LR = {"s4erp": 1e-3, "s4erp_adv": 1e-3, "_dualcd": 1e-4}
 
 
 @dataclass
@@ -89,6 +91,10 @@ class EEGFoundationConfig:
     n_heads: int = 8                    # Transformer only
     d_ff: int = 256
     dropout: float = 0.1
+
+    # Adversarial (s4erp_adv only)
+    n_subjects: int = 11
+    lambda_adv: float = 0.1
 
     # DualCD / DINO
     lambda_intra: float = 0.5
@@ -169,6 +175,9 @@ class EEGFoundationClassifier(nn.Module):
         common = dict(d_model=cfg.d_model, n_layers=n_layers, d_ff=cfg.d_ff, dropout=cfg.dropout)
         if variant == "s4erp":
             self.model = klass(cfg, state_dim=cfg.state_dim, **common)
+        elif variant == "s4erp_adv":
+            self.model = klass(cfg, state_dim=cfg.state_dim, **common,
+                               n_subjects=cfg.n_subjects, lambda_adv=cfg.lambda_adv)
         else:
             dualcd = dict(
                 lambda_intra=cfg.lambda_intra, dino_out_dim=cfg.dino_out_dim,
@@ -210,7 +219,10 @@ class EEGFoundationClassifier(nn.Module):
         else:
             out = self.model(xt)
             logits, feats = out["logits"], out["z_inv"]
-        return {"logits": logits, "features": feats, "confidence": None}
+        result = {"logits": logits, "features": feats, "confidence": None}
+        if "subject_logits" in out:
+            result["subject_logits"] = out["subject_logits"]
+        return result
 
     # ------------------------------------------------------------------ #
     # training hooks (used by code/training/e2e_trainer.py)
@@ -220,7 +232,8 @@ class EEGFoundationClassifier(nn.Module):
         """True for the DualCD variants, whose loss is not plain cross-entropy."""
         return self.is_dualcd
 
-    def training_step(self, x: torch.Tensor, y: torch.Tensor, epoch: int = 0
+    def training_step(self, x: torch.Tensor, y: torch.Tensor, epoch: int = 0,
+                      subject_ids: Optional[torch.Tensor] = None
                       ) -> Tuple[torch.Tensor, Dict[str, float]]:
         """Full training loss for one batch.
 
@@ -234,8 +247,15 @@ class EEGFoundationClassifier(nn.Module):
                 warmup_epochs=self.config.warmup_epochs,
             )
             return loss, {k: float(v.detach().item()) for k, v in parts.items()}
-        logits = self.forward(x)["logits"]
-        loss = F.cross_entropy(logits, y)
+        out = self.forward(x)
+        logits = out["logits"]
+        ce_loss = F.cross_entropy(logits, y)
+        if "subject_logits" in out and subject_ids is not None:
+            adv_loss = F.cross_entropy(out["subject_logits"], subject_ids)
+            loss = ce_loss + adv_loss
+            return loss, {"ce": float(ce_loss.detach().item()),
+                          "adv": float(adv_loss.detach().item())}
+        loss = ce_loss
         return loss, {"ce": float(loss.detach().item())}
 
     @torch.no_grad()

@@ -70,7 +70,7 @@ DEFAULT_TRAIN_SESSIONS = ("ses-01", "ses-02")
 DEFAULT_VAL_SESSIONS = ("ses-03",)
 
 CROSS_SUBJECT_RESULT_COLUMNS: List[str] = [
-    "dataset", "model", "protocol", "fold", "seed",
+    "dataset", "model", "protocol", "split_seed", "fold", "seed",
     "n_train_subjects", "n_val_subjects", "test_subject",
     "n_train", "n_val", "n_test",
     "monitor", "best_score", "best_epoch", "epochs_run", "early_stopped",
@@ -338,6 +338,7 @@ def _make_dataset(
     subject_data: "Dict[str, SubjectData]",
     subjects: Sequence[str],
     sessions: Optional[Sequence[str]] = None,
+    adversarial: bool = False,
 ) -> Tuple[Optional[ConcatDataset], torch.Tensor]:
     """Concatenate subjects **without copying their trials**.
 
@@ -354,16 +355,24 @@ def _make_dataset(
     sess_set = {ses_id(s) for s in sessions} if sessions is not None else None
     parts = []
     ys = []
-    for s in subjects:
+    for s_idx, s in enumerate(subjects):
         sd = subject_data[s]
         if sess_set is None:
-            parts.append(TensorDataset(sd.X, sd.y))
+            if adversarial:
+                sid = torch.full((sd.n_trials,), s_idx, dtype=torch.long)
+                parts.append(TensorDataset(sd.X, sd.y, sid))
+            else:
+                parts.append(TensorDataset(sd.X, sd.y))
             ys.append(sd.y)
             continue
         idx = [i for i, sess in enumerate(sd.session_of_trial) if ses_id(sess) in sess_set]
         if not idx:
             continue
-        parts.append(TensorDataset(sd.X[idx], sd.y[idx]))
+        if adversarial:
+            sid = torch.full((len(idx),), s_idx, dtype=torch.long)
+            parts.append(TensorDataset(sd.X[idx], sd.y[idx], sid))
+        else:
+            parts.append(TensorDataset(sd.X[idx], sd.y[idx]))
         ys.append(sd.y[idx])
     if not parts:
         return None, torch.empty(0, dtype=torch.long)
@@ -482,8 +491,10 @@ def run_cell(
     set_seed(int(seed))
     pin = device.type == "cuda"
     mode = (val_mode or "subjects").lower()
+    is_adversarial = "adv" in (model_name or "").lower()
     train_ds, ytr = _make_dataset(
         subject_data, fold.train_subjects, sessions=fold.train_sessions,
+        adversarial=is_adversarial,
     )
 
     # Under gradient accumulation the train loader yields micro-batches; the trainer groups
@@ -630,6 +641,7 @@ def run_cross_subject(
     n_val_subjects: Optional[int] = None,
     val_subject_fraction: float = 0.15,
     split_seed: int = 0,
+    split_seeds: Optional[Sequence[int]] = None,
     test_subjects: Optional[Sequence[str]] = None,
     val_subjects: Optional[Sequence[str]] = None,
     test_fraction: float = 0.2,
@@ -642,7 +654,14 @@ def run_cross_subject(
     resume: bool = True,
     logger=None,
 ) -> Dict[str, object]:
-    """Run the whole cross-subject sweep, resuming whatever is already on disk."""
+    """Run the whole cross-subject sweep, resuming whatever is already on disk.
+
+    ``split_seeds`` re-draws the subject partition: each value produces its own set of
+    folds, so ``split_seeds=[41..45]`` with ``seeds=[0]`` means "5 different 5-fold
+    partitions, identical training seed" — the variance reported is then the variance of
+    the split, not of the initialization. Cell tags carry the split seed, so the
+    partitions never collide in one output directory.
+    """
     out_dir = Path(out_dir)
     splits_dir = out_dir / "splits"
     cells_dir = out_dir / "cells"
@@ -653,30 +672,36 @@ def run_cross_subject(
         records, n_channels=data_dims["n_channels"], n_times=data_dims["n_times"],
         normalization=normalization, logger=logger,
     )
-    folds = make_subject_folds(
-        list(subject_data), protocol=protocol, n_folds=n_folds, val_mode=val_mode,
-        n_val_subjects=n_val_subjects, val_subject_fraction=val_subject_fraction,
-        split_seed=split_seed, test_subjects=test_subjects, val_subjects=val_subjects,
-        test_fraction=test_fraction, train_sessions=train_sessions,
-        val_sessions=val_sessions,
-    )
-    save_json({
-        "dataset": dataset, "protocol": protocol, "n_folds": len(folds),
-        "val_mode": val_mode, "split_seed": split_seed,
-        "train_sessions": list(folds[0].train_sessions or []) if folds else [],
-        "val_sessions": list(folds[0].val_sessions or []) if folds else [],
-        "n_subjects": len(subject_data), "normalization": normalization,
-        "subjects": sorted(subject_data),
-        "trials_per_subject": {s: subject_data[s].n_trials for s in sorted(subject_data)},
-        "folds": [asdict(f) for f in folds],
-    }, splits_dir / f"cross_subject_folds__{protocol}__seed{split_seed}.json")
 
-    selected = [f for f in folds if folds_subset is None or f.fold in set(int(i) for i in folds_subset)]
+    split_seed_list = [int(s) for s in (split_seeds if split_seeds else [split_seed])]
+    multi_split = len(split_seed_list) > 1
+    folds_by_split: "Dict[int, List[CrossSubjectFold]]" = {}
+    for ss in split_seed_list:
+        folds = make_subject_folds(
+            list(subject_data), protocol=protocol, n_folds=n_folds, val_mode=val_mode,
+            n_val_subjects=n_val_subjects, val_subject_fraction=val_subject_fraction,
+            split_seed=ss, test_subjects=test_subjects, val_subjects=val_subjects,
+            test_fraction=test_fraction, train_sessions=train_sessions,
+            val_sessions=val_sessions,
+        )
+        folds_by_split[ss] = folds
+        save_json({
+            "dataset": dataset, "protocol": protocol, "n_folds": len(folds),
+            "val_mode": val_mode, "split_seed": ss,
+            "train_sessions": list(folds[0].train_sessions or []) if folds else [],
+            "val_sessions": list(folds[0].val_sessions or []) if folds else [],
+            "n_subjects": len(subject_data), "normalization": normalization,
+            "subjects": sorted(subject_data),
+            "trials_per_subject": {s: subject_data[s].n_trials for s in sorted(subject_data)},
+            "folds": [asdict(f) for f in folds],
+        }, splits_dir / f"cross_subject_folds__{protocol}__seed{ss}.json")
+
+    n_total_folds = sum(len(f) for f in folds_by_split.values())
     if logger is not None:
-        logger.info("cross-subject plan: dataset=%s protocol=%s val_mode=%s folds=%d/%d "
-                    "models=%s seeds=%s",
-                    dataset, protocol, val_mode, len(selected), len(folds),
-                    list(models), list(seeds))
+        logger.info("cross-subject plan: dataset=%s protocol=%s val_mode=%s "
+                    "split_seeds=%s folds/split=%d models=%s train_seeds=%s",
+                    dataset, protocol, val_mode, split_seed_list,
+                    len(folds_by_split[split_seed_list[0]]), list(models), list(seeds))
 
     all_rows: List[Dict[str, object]] = []
     failures: List[Dict[str, object]] = []
@@ -689,34 +714,47 @@ def run_cross_subject(
         if micro_bs and logger is not None:
             logger.info("%s: micro_batch=%d x accum=%d -> effective batch %d",
                         model_name, int(micro_bs), spec_m.accum_steps, spec_m.batch_size)
-        for fold in selected:
-            for seed in seeds:
-                tag = f"{model_name}__fold{fold.fold}__seed{int(seed)}"
-                ck = (Path(ckpt_root) / tag) if ckpt_root is not None else (cells_dir / tag / "ckpt")
-                try:
-                    rows = run_cell(
-                        subject_data, fold, dataset=dataset, model_name=model_name,
-                        model_params=mp, data_dims=data_dims, spec=spec_m, seed=int(seed),
-                        device=device, ckpt_dir=ck,
-                        result_json=cells_dir / tag / "result.json",
-                        protocol=protocol, val_mode=val_mode, resume=resume, logger=logger,
-                    )
-                    all_rows += rows
-                except Exception as exc:  # keep the sweep alive; record and continue
-                    msg = f"{type(exc).__name__}: {exc}"
-                    failures.append({"cell": tag, "error": msg})
-                    if logger is not None:
-                        logger.exception("cell FAILED %s: %s", tag, msg)
-                    all_rows.append({
-                        "dataset": dataset, "model": model_name, "protocol": protocol,
-                        "fold": fold.fold, "seed": int(seed),
-                        "n_train_subjects": len(fold.train_subjects),
-                        "n_val_subjects": len(fold.val_subjects),
-                        "test_subject": ",".join(fold.test_subjects),
-                        "status": "failed", "error": msg,
-                    })
+        for ss in split_seed_list:
+            selected = [f for f in folds_by_split[ss]
+                        if folds_subset is None or f.fold in set(int(i) for i in folds_subset)]
+            for fold in selected:
+                for seed in seeds:
+                    # The split seed is part of the tag only when several are swept, so
+                    # single-split runs (e.g. paper_baseline_3c_821_v1) keep their layout.
+                    split_part = f"split{ss}__" if multi_split else ""
+                    tag = f"{model_name}__{split_part}fold{fold.fold}__seed{int(seed)}"
+                    ck = ((Path(ckpt_root) / tag) if ckpt_root is not None
+                          else (cells_dir / tag / "ckpt"))
+                    try:
+                        rows = run_cell(
+                            subject_data, fold, dataset=dataset, model_name=model_name,
+                            model_params=mp, data_dims=data_dims, spec=spec_m,
+                            seed=int(seed), device=device, ckpt_dir=ck,
+                            result_json=cells_dir / tag / "result.json",
+                            protocol=protocol, val_mode=val_mode, resume=resume,
+                            logger=logger,
+                        )
+                        for r in rows:
+                            r.setdefault("split_seed", ss)
+                        all_rows += rows
+                    except Exception as exc:  # keep the sweep alive; record and continue
+                        msg = f"{type(exc).__name__}: {exc}"
+                        failures.append({"cell": tag, "error": msg})
+                        if logger is not None:
+                            logger.exception("cell FAILED %s: %s", tag, msg)
+                        all_rows.append({
+                            "dataset": dataset, "model": model_name, "protocol": protocol,
+                            "fold": fold.fold, "seed": int(seed), "split_seed": ss,
+                            "n_train_subjects": len(fold.train_subjects),
+                            "n_val_subjects": len(fold.val_subjects),
+                            "test_subject": ",".join(fold.test_subjects),
+                            "status": "failed", "error": msg,
+                        })
     return {
-        "rows": all_rows, "folds": [asdict(f) for f in folds], "failures": failures,
+        "rows": all_rows,
+        "folds": [asdict(f) for ss in split_seed_list for f in folds_by_split[ss]],
+        "failures": failures,
+        "split_seeds": split_seed_list, "n_folds_total": n_total_folds,
         "n_subjects": len(subject_data), "n_cells_ok": sum(1 for r in all_rows
                                                            if r.get("status") == "ok"),
         "n_cells_failed": len(failures),
