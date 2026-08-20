@@ -594,6 +594,9 @@ def run_foundation_cross_subject(cfg: Dict, cfg_path: Path, args: argparse.Names
 
     models = _parse_list(args.models) or cfg.get("models", ["s4erp"])
     seeds = _parse_int_list(args.seeds) or train_cfg.get("seeds", [0])
+    # Split seeds re-draw the subject partition; training seeds stay in `seeds`.
+    split_seeds = (_parse_int_list(getattr(args, "split_seeds", None))
+                   or cs_cfg.get("split_seeds"))
     protocol = (args.split_protocol or cs_cfg.get("protocol", "kfold_subject")).lower()
     n_folds = args.folds if args.folds is not None else cs_cfg.get("n_folds", 5)
     folds_subset = _parse_int_list(args.folds_subset)
@@ -637,6 +640,7 @@ def run_foundation_cross_subject(cfg: Dict, cfg_path: Path, args: argparse.Names
         n_val_subjects=cs_cfg.get("n_val_subjects"),
         val_subject_fraction=cs_cfg.get("val_subject_fraction", 0.15),
         split_seed=cs_cfg.get("split_seed", 0),
+        split_seeds=split_seeds,
         test_subjects=cs_cfg.get("test_subjects"), val_subjects=cs_cfg.get("val_subjects"),
         test_fraction=cs_cfg.get("test_fraction", 0.2),
         train_sessions=cs_cfg.get("train_sessions"),
@@ -653,13 +657,108 @@ def run_foundation_cross_subject(cfg: Dict, cfg_path: Path, args: argparse.Names
             _write_rows(rows, runs_dir / f"cross_subject__{model_name}{suffix}.csv",
                         CROSS_SUBJECT_RESULT_COLUMNS)
     save_json({"run_id": run_id, "dataset": dataset, "models": list(models),
-               "seeds": list(seeds), "protocol": protocol, "n_folds": len(res["folds"]),
+               "seeds": list(seeds), "split_seeds": res.get("split_seeds"),
+               "protocol": protocol, "n_folds": len(res["folds"]),
                "n_subjects": res["n_subjects"], "n_rows": len(res["rows"]),
                "n_cells_ok": res["n_cells_ok"], "n_cells_failed": res["n_cells_failed"],
                "failures": res["failures"], "checkpoint_names": res["checkpoint_names"],
                "resume": resume, "spec": vars(spec), "data_dims": data_dims,
                "cuda": cuda_info, "elapsed_sec": round(time.time() - t0, 1)},
               runs_dir / f"meta_cross_subject{suffix}.json")
+    logger.info("ALL DONE in %.1fs | rows=%d ok=%d failed=%d | out=%s",
+                time.time() - t0, len(res["rows"]), res["n_cells_ok"],
+                res["n_cells_failed"], out_dir)
+
+
+# --------------------------------------------------------------------------- #
+# Cross-session (subject-specific) on the end-to-end trainer
+# --------------------------------------------------------------------------- #
+def run_cross_session_e2e(cfg: Dict, cfg_path: Path, args: argparse.Namespace) -> None:
+    """Train one model per subject on early sessions, test on that subject's later ones.
+
+    Same trainer / cell layout / checkpoint policy as ``foundation_cross_subject`` so both
+    tracks are resumable and produce identical ``result.json`` structures. Session lists
+    come from ``cross_session.{train_sessions,test_sessions}``.
+    """
+    from code.datasets.session_splits import load_ok_sessions
+    from code.experiments.cross_session_e2e_protocols import (
+        CROSS_SESSION_RESULT_COLUMNS, run_cross_session_e2e as _sweep,
+    )
+    from code.utils.config import save_config
+    from code.utils.io import save_json
+    from code.utils.logging_utils import get_logger
+    from code.utils.paths import load_paths
+
+    logger = get_logger("cross_session_e2e")
+    t0 = time.time()
+    P = load_paths(_abs(args.paths), require_raw=False)
+    data_cfg = cfg.get("data", {}) or {}
+    train_cfg = cfg.get("train", {}) or {}
+    cs_cfg = cfg.get("cross_session", {}) or {}
+    out_cfg = cfg.get("output", {}) or {}
+    run_id = cfg.get("run_id", "cross_session_e2e_v1")
+    dataset = str(data_cfg.get("name") or cfg.get("dataset") or "shu")
+
+    models = _parse_list(args.models) or cfg.get("models", ["s4erp"])
+    seeds = _parse_int_list(args.seeds) or train_cfg.get("seeds", [0])
+    resume = not args.no_resume
+
+    spec = _build_e2e_spec(args, train_cfg)
+    device = _resolve_device(args.device or train_cfg.get("device", "auto"), logger)
+    data_dims = dict(
+        n_channels=data_cfg.get("n_channels", 32), n_times=data_cfg.get("n_times", 1000),
+        n_classes=data_cfg.get("n_classes", 2), sfreq=data_cfg.get("sfreq", 250),
+    )
+
+    out_dir = _abs(args.out) if args.out else _abs(
+        out_cfg.get("output_dir", f"outputs/experiments/{dataset}/{run_id}"))
+    runs_dir = out_dir / "runs"
+    runs_dir.mkdir(parents=True, exist_ok=True)
+    save_config(cfg, out_dir / "resolved_config.yaml")
+    ckpt_root = None
+    if not args.no_save_ckpt:
+        ckpt_root = _abs(args.ckpt_dir or out_cfg.get("checkpoint_dir",
+                                                      f"checkpoints/{dataset}/{run_id}"))
+
+    cuda_info = _cuda_info(device)
+    logger.info("device=%s | cuda=%s", device, cuda_info)
+    records = load_ok_sessions(
+        _resolve_manifest(cfg, P), subjects=_parse_list(args.subjects),
+        sessions=None,                      # every ok session is needed (train + test)
+        status_filter=tuple(data_cfg.get("status_filter", ["ok"])),
+        max_subjects=args.max_subjects,
+    )
+    logger.info("loaded %d ok sessions / %d subjects | models=%s | seeds=%s | resume=%s",
+                len(records), len({r.subject for r in records}), models, seeds, resume)
+
+    res = _sweep(
+        records, dataset=dataset, models=models,
+        model_params_all=cfg.get("model_params", {}) or {}, data_dims=data_dims,
+        spec=spec, seeds=seeds, device=device,
+        train_sessions=cs_cfg.get("train_sessions", ["ses-01"]),
+        test_sessions=cs_cfg.get("test_sessions", ["ses-02", "ses-03", "ses-04", "ses-05"]),
+        subjects_subset=_parse_list(args.subjects),
+        micro_batch_per_model=train_cfg.get("micro_batch_per_model") or {},
+        normalization=spec.normalization, out_dir=out_dir, ckpt_root=ckpt_root,
+        resume=resume, logger=logger,
+    )
+
+    suffix = f"__{args.tag_suffix}" if args.tag_suffix else ""
+    for model_name in models:
+        rows = [r for r in res["rows"] if r.get("model") == model_name]
+        if rows:
+            _write_rows(rows, runs_dir / f"cross_session__{model_name}{suffix}.csv",
+                        CROSS_SESSION_RESULT_COLUMNS)
+    save_json({"run_id": run_id, "dataset": dataset, "models": list(models),
+               "seeds": list(seeds), "protocol": "cross_session",
+               "train_sessions": cs_cfg.get("train_sessions"),
+               "test_sessions": cs_cfg.get("test_sessions"),
+               "n_subjects": res["n_subjects"], "n_rows": len(res["rows"]),
+               "n_cells_ok": res["n_cells_ok"], "n_cells_failed": res["n_cells_failed"],
+               "failures": res["failures"], "checkpoint_names": res["checkpoint_names"],
+               "resume": resume, "spec": vars(spec), "data_dims": data_dims,
+               "cuda": cuda_info, "elapsed_sec": round(time.time() - t0, 1)},
+              runs_dir / f"meta_cross_session{suffix}.json")
     logger.info("ALL DONE in %.1fs | rows=%d ok=%d failed=%d | out=%s",
                 time.time() - t0, len(res["rows"]), res["n_cells_ok"],
                 res["n_cells_failed"], out_dir)
@@ -673,4 +772,5 @@ PHASE_RUNNERS = {
     "phase2c_prototype_drift": run_phase2c_prototype_drift,
     "phase3_tta": run_phase3_tta,
     "foundation_cross_subject": run_foundation_cross_subject,
+    "cross_session_e2e": run_cross_session_e2e,
 }

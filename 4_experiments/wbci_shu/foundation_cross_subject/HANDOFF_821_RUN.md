@@ -14,7 +14,8 @@ status: "active"
 >
 > **对应 Git commit**：`ad0c5d2`（已 push 到 `origin/main`）。新账号 `git pull` 到这个提交即代码一致。
 > **旧账号项目根**（拷贝源）：`/share/home/Zihang/MI`
-> **当前状态**：**已暂停**（Slurm job `37966–37973` 已 `scancel`），进度 **50/77 cell**。
+> **当前状态**：**交接已完成，已在新账号 `yuan` 恢复训练**（2026-08-13 00:48，job `38023–38030`），
+> 进度 **50/77 cell**。交接的实际执行记录见 §4.5。
 
 ---
 
@@ -271,6 +272,53 @@ rg -c '/share/home/Zihang/MI' outputs/processed/wbci_shu_3c_mat_clean/processed_
 python code/run.py --dry-run --config code/configs/experiments/paper_baseline_3c_821.yaml
 ```
 
+### 4.5 实际执行记录（2026-08-13，新账号 `yuan`）
+
+新账号项目根是 **`/share/home/yuan/SYX/eeg-mi-online`**（不是 `~/MI`）。代码已在 `26bb950`，
+比 `ad0c5d2` 新一个提交（就是本交接文档），无需 pull。
+
+做了什么：
+
+| 步骤 | 结果 |
+|:---|:---|
+| `paths.local.yaml` | 新建，`shu_2c_root` → `/share/workspace2/moto_imagination/WBCIC_SHU`（yuan 自己的共享盘目录） |
+| A 预处理数据 | 按 §4.3.1 **本地重跑生成**，33/33 session `status=ok`，9899 trial，2.0 G |
+| B run 输出 | rsync 过来，50 个 `result.json`，14 M |
+| C-精简 权重 | rsync 过来，`atcnet__fold{5,8,10}__seed0` 的 `best.pt`+`last.pt`，6.5 M |
+| 提交 | `bash scripts/slurm/submit_paper_baseline_821.sh` → job `38023–38030`（fold 3–10） |
+
+`FOLD_MODELS` 表**不用改**：重新数过，缺的 cell 与脚本里写死的完全一致（27 个）。
+
+**验证脚本 `scripts/verify_821_handoff.py`**（本次新增）。换账号 / 换机后跑它，比 `--dry-run` 强得多，
+四件事：
+
+1. **数据是否和来源账号逐位一致** —— 比对解码后 `X`/`y` 数组的 hash，而不是 `.npz` 容器字节
+   （不同 numpy/zlib 版本压出来的字节可以不同，数组却一样）。**33/33 session MATCH**。
+2. **重建的折是否和已完成 cell 里记录的折一致** —— 若被试名单漂移，「fold 3」就换了人，
+   而 `result.json` 还在，会被静默跳过、把两种划分混进一张表。**50/50 一致**。
+3. **每折是否仍是 8/2/1 被试、互不重叠、9899 trial 全用上**。
+4. **本地重算的 `cell_signature` 是否等于旧账号写进 `result.json` / `last.pt` 的那个** ——
+   这条最硬：同一个指纹也是续跑守卫用的，对上就说明数据维度、划分、`model_params`、
+   optimizer/lr/batch/归一化/梯度累积全都一致。**50/50 cell + 3 个 ATCNet 断点全 MATCH**。
+   不查这条的话，不一致要等 job 跑到那个 cell 才炸（几小时后）。
+
+```bash
+python scripts/verify_821_handoff.py                  # 抽查 3 个 session，四项应全 PASS
+python scripts/verify_821_handoff.py --hash-sessions 33   # 全量比数据（~3 min）
+```
+
+> ⚠ **trial 数不是每折都 7199:1800:900。** `sub-010/ses-01` 官方只有 **299** trial（不是 300，
+> 见 `code/preprocessing/wbci_3c_mat.py` 的 `min_trials`）。所以 sub-010 当验证的 fold 8 是
+> `7200:1799:900`，当测试的 fold 9 是 `7200:1800:899`。**这是数据本身的性质，不是 bug**，
+> 旧账号也是这个数（数据逐位一致）。8:2:1 是**被试**比例，不是 trial 数的硬等式。
+
+**交接正确性的最强证据**：fold 5 的 ATCNet 从拷来的 `last.pt` **续在 epoch 225** 继续训练。
+`run_signature` 只要有任何差异（数据维度、划分、model_params、optimizer/lr/batch/归一化…）
+`e2e_trainer.py` 就会直接抛 `RuntimeError`。它没抛 —— 说明本地重跑生成的数据 + 当前 YAML
+和旧账号算出来的指纹**完全相同**。
+
+**收权限**：搬完记得在旧账号 `chmod o-x /share/home/Zihang`（§4.0）。
+
 ---
 
 ## 5. 新账号上怎么继续跑
@@ -288,12 +336,46 @@ bash scripts/slurm/submit_paper_baseline_821.sh
 - 无 `result.json` 但有 `last.pt` → 从断点续（optimizer / scheduler / RNG / history / patience 全部复原）
 - 两者都无 → 从头训
 
-新账号的好处是 QOS 配额独立。旧号撞到过两个墙：
+### 5.1 QOS 与排队（2026-08-13 在新账号实测）
 
-- `QOSMaxWallDurationPerJobLimit`：单 job **最长 48h**，改不了
-- `QOSMaxCpuPerUserLimit`：`shu_gpu.sbatch` 每 job 要 8 CPU，实测同时只能跑 4 个 job，其余 PENDING
+两个账号的 QOS **完全一样**，都是 `32cpu4gpu64g`，所以「换号拿新配额」并不成立：
 
-环境：conda env **`mi_torch_cu118`**，分区 `gpu2node`，`--gres=gpu:1`，`--mem=40G`。**禁止在登录节点跑训练。**
+```
+sacctmgr show qos where name=32cpu4gpu64g format=Name,MaxWall,MaxTRESPU
+32cpu4gpu64g   2-00:00:00   cpu=32,gres/gpu=4,mem=64G
+```
+
+| 限制 | 是否真的生效 | 后果 |
+|:---|:---|:---|
+| `MaxWall` 48h | **生效** | 单 job 最长 48h，60/72/96h 一律被拒 |
+| `cpu=32` | **生效** | `shu_gpu.sbatch` 每 job `-c 8` → **同时只能 4 个 job**，其余 `QOSMaxCpuPerUserLimit` PENDING |
+| `gres/gpu=4` | **生效** | 同时 4 张卡 |
+| `mem=64G` | **不生效** | 旧号 4 个 job 各 `--mem=40G`（共 160 G）在 `2026-08-10T22:38:40` 同时起跑。**所以不用为了并发去砍 `--mem`** |
+
+`mem` 那一条很重要：按 64 G 除以 4 会算出「每 job 只能 16 G」，而 `pb821_g1` 实测 **MaxRSS 15.6 G**
+（`dualcd_transformer` 单独跑也有 13.3 G），16 G 会贴着上限随时 OOM。既然 mem 不计入配额，
+**保持 `--mem=40G` 不要动**。查历史用量：
+
+```bash
+sacct -j <jobid> --format=JobID%14,JobName%16,State%13,Elapsed%11,ReqMem%7,MaxRSS%11
+```
+
+### 5.2 4 张卡凑不齐时怎么办
+
+提交后可能只起来 3 个，第 4 个 PENDING 且 reason 是 `(Resources)`（不是 QOS）—— 说明
+`gpu2node` 两个节点 16 张卡被别人占满了。集群是**同构**的（`gpu01–gpu05` 全是 RTX 4090 D 24 G，
+旧账号日志里 5 个节点跑出来的 `nvidia-smi` 型号一致），所以直接把某个 PENDING job 挪到 `gpu3node`：
+
+```bash
+scontrol update jobid=<id> partition=gpu3node     # 立刻能起
+scontrol show node gpu01 gpu02 gpu03 gpu04 gpu05 | grep -E 'NodeName|AllocTRES'   # 先看哪个节点有空卡
+```
+
+**不能写多分区**：`partition=gpu2node,gpu3node` 会被拒（`Multiple partition job request not
+supported when a partition is set in the association`），association 里已经把分区钉死了，只能一次填一个。
+
+环境：conda env **`mi_torch_cu118`**（`_common.sh` 会 fallback 到 `/share/software/anaconda3/2024.10`），
+`--gres=gpu:1`，`--mem=40G`。**禁止在登录节点跑训练**（预处理是纯 I/O + 转置，可以在登录节点跑）。
 
 ---
 

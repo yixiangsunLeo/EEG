@@ -61,7 +61,10 @@ status: "active"
 | `code/models/eeg_foundation/` | **端到端主线 5 模型包**（学长 `models_eeg_foundation/` 移植）：`s4_layers.py`（S4 HiPPO+FFT）、`pooling.py`（flatten/attention/temporal-bin）、`encoders.py`（ShallowNet stem + S4/Transformer）、`losses.py`（DINO/iBOT/DKoleo/PrototypeBank/OrthogonalMask/双扰动）、`models.py`（5 变体 + MultiViewGenerator）、`adapter.py`（**新增**：项目契约 + DualCD 训练钩子 + per-trial 归一化）。 |
 | `code/models/eeg_foundation/README.md` | 5 模型对照表、两套「方言」的桥接方式、**移植偏差逐条记录（§4）**、MI 适配（mu/beta 视图、4s 时间分箱）。 |
 | `code/training/e2e_trainer.py` | 端到端训练器：非 CE 损失钩子、**每 cell 只存 `best.pt`/`last.pt`**、断点续跑（optimizer/scheduler/RNG/history + 原子写入 + `run_signature` 配置漂移守卫）、cosine/梯度裁剪/可选 AMP。 |
-| `code/experiments/cross_subject_protocols.py` | 跨被试协议：被试级 `loso`/`kfold_subject`/`holdout`；`val_mode`=`subjects`/`trials`/`sessions`（后者对齐 DSGNet/SHUv5：train ses-01+02、val ses-03）；per-trial 归一化、泄漏断言、`best`+`last` 双评测、`cell_signature`。 |
+| `code/experiments/cross_subject_protocols.py` | 跨被试协议：被试级 `loso`/`kfold_subject`/`holdout`；`val_mode`=`subjects`/`trials`/`sessions`（后者对齐 DSGNet/SHUv5：train ses-01+02、val ses-03）；per-trial 归一化、泄漏断言、`best`+`last` 双评测、`cell_signature`。2026-08-16 起支持 `split_seeds` 扫多套被试划分。 |
+| `code/experiments/cross_session_e2e_protocols.py` | **被试内跨 session 协议（SHU 2022，2026-08-16）**：每被试一个模型，train/test session 列表可配（本轮 ses-01+02+03 → ses-04+05）；验证集只从训练 session 切；逐测试 session + 池化双口径评测；同 `e2e_trainer`，断点续跑 + best/last + 三曲线。 |
+| `code/configs/experiments/shu_cross_session_3to2.yaml` | 实验一 config：SHU 2022 跨 session，论文 recipe（Adam 1e-3 / batch 16 / NLLLoss）+ 两处记录在案的偏离（300 epoch、3 session 训练）；7 模型 × 25 被试 = 175 cell。 |
+| `code/configs/experiments/shu_cross_subject_5fold.yaml` | 实验二 config：SHU 2022 跨被试 5 折 16:4:5，`split_seeds` 41–45、训练种子固定 0；821 recipe + patience 25 + monitor accuracy；7 模型 × 25 = 175 cell。 |
 | `code/configs/experiments/foundation_cross_subject_wbci_3c.yaml` | WBCIC-SHU **三分类 11 人** LOSO 端到端（`run_id=foundation_3c_loso_paper_v1`，论文对齐 session val）。 |
 | `inbox/papers/dsgnet_jbhi2026_FullText.pdf` | Lou et al. IEEE JBHI 2026（DSGNet）全文 PDF；对标 Acc/F1/Kappa。 |
 | `inbox/papers/dsgnet_jbhi2026_extracted.txt` | 同上 PDF 的纯文本摘录（协议与 Table II）。 |
@@ -76,6 +79,7 @@ status: "active"
 | `4_experiments/wbci_shu/foundation_cross_subject/HANDOFF_821_RUN.md` | **821 run 交接文档**：实验设定、当前 50/77 进度与阶段数字、参数/代码位置、换账号要拷哪些产物（数据 2.0G + outputs 14M 必需，checkpoints 8.8G 可精简）、续跑与进度查询命令、8 条坑。 |
 | `scripts/plot_three_curves.py` | 从 `result.json` 的 `history` 画 per-epoch train/val/test 三曲线（per-cell + 跨折均值）。 |
 | `scripts/summarize_cross_subject.py` | 跨被试 run 汇总：`tables/{per_cell,per_model,vs_paper}.csv` + `REPORT_TABLE.md`（内嵌论文 Table II SHUv5 数字作对照）。 |
+| `scripts/package_shu2022_handoff.py` | 把 SHU 2022 跨会话/跨被试两套 run 打成交给学长的文件夹（表、图、复制 result.json）。 |
 | `code/configs/experiments/{foundation_cross_subject,shu_foundation_cross_subject}.yaml` | **端到端主线双数据集配置**（WBCIC 58ch / SHU 32ch，分开跑；协议段标注 pending_advisor_confirmation）。 |
 | `tests/foundation/test_eeg_foundation_contract.py` | 5 模型 × 双通道数的 forward 契约、loss 可反传、teacher EMA/prototype 更新、归一化 fit-free、参数量对齐学长表格（19 passed, CPU）。 |
 | `tests/foundation/test_cross_subject_protocol.py` | 划分互斥/决定性、只写 best+last、完成 cell 跳过、中断 cell 续跑、换了划分/超参后拒绝续跑、**测试被试不进 train/val**、通道不匹配报错（13 passed, CPU）。 |

@@ -212,6 +212,7 @@ class EEGFoundationClassifier(nn.Module):
 
     def forward(self, x: torch.Tensor) -> Dict[str, Optional[torch.Tensor]]:
         xt = _as_time_last(x)
+        out: Dict[str, torch.Tensor] = {}
         if self.is_dualcd:
             feats = self.model.encode(xt)
             z_causal, _ = self.model.mask(feats)

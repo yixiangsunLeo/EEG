@@ -23,6 +23,7 @@ status: "active"
 | `prototype_drift.py` / `prototype_drift_summarize.py` | Phase 2c 原型漂移诊断 | session |
 | `session_tta.py` | Phase 3 TTA（paused，未废弃） | session |
 | `cross_subject_protocols.py` | **跨被试（当前主线）** | **subject**（LOSO / subject k-fold / holdout）；可选 session 级 train/val |
+| `cross_session_e2e_protocols.py` | **被试内跨 session（SHU 2022，2026-08-16）** | **session**（配置 train/test session 列表，每被试一个模型） |
 | `metrics.py` / `data_quality.py` | 共用指标与质检 | — |
 
 ## 3. Update Rules
@@ -38,6 +39,19 @@ ses-01+02 / val ses-03，对齐 SHUv5 / WBCIC-SHU 3C 论文）；归一化必须
 （训练集固定子集在 eval 模式 + 测试被试），交给 `e2e_trainer` 每 epoch 记录进 `history` 的
 `train_eval` / `test`。**test 绝不参与模型选择**——`best.pt`、早停、`best_score` 只读 val，
 守卫在 `code/training/e2e_trainer.py`。绘图见 `scripts/plot_three_curves.py`。
+
+**被试内跨 session（`cross_session_e2e_protocols.py`，2026-08-16）**：SHU 2022 用。每被试一个
+模型，train/test 的 session 列表来自 config（本轮 `ses-01+02+03` → `ses-04+05`），两者必须
+不相交且被试必须齐备（缺 session 的被试跳过并告警，不会悄悄用更少数据训练）。验证集只能从
+**训练 session** 的 trial 里分层切（`val_fraction`，本轮 1/9 = 论文 8:1:1 的 train:val）。
+每个 cell 是 `(model, subject, seed)`，走同一个 `e2e_trainer`，所以断点续跑、best/last 双
+checkpoint、三曲线与跨被试完全一致；测试指标**逐 session 分别算**（论文 Fig.7 的 s2–s5 口径）
+再加一个池化值，都存进 `result.json`。
+
+**cell 目录命名**（`scripts/plot_three_curves.py` 三种都能解析）：
+`<model>__fold<k>__seed<s>`（跨被试单划分）、`<model>__split<ss>__fold<k>__seed<s>`
+（跨被试扫多个 `split_seeds`）、`<model>__sub-<id>__seed<s>`（跨 session）。
+注意 `split_seeds` 改的是**被试划分**，`train.seeds` 改的是**训练随机种子**，两者不要混。
 
 ## 4. Related Files
 

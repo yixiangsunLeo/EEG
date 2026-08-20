@@ -7,6 +7,110 @@ Format per entry: date, what was done, decisions made, open questions, next step
 
 ---
 
+## 2026-08-20 — SHU 2022 两实验交接包（给学长）
+
+- 两套实验均 175/175 完成。交接目录：
+  `/share/home/yuan/SYX/SHU2022_两次实验结果_交给学长_20260820/`（约 54 MB）。
+  含全部 `result.json`、划分、YAML、Slurm 日志、汇总 CSV、总览图 + 350 张三曲线、中文解读
+  `01_实验解读.md`。**未拷权重**（`checkpoints/shu/` 两侧合计 ~2.4 GB）。
+- 实验一头条（ses-04+05 合并，25 被试 mean±std）：S4ERP **58.7±8.8%**，其余卷积模型 57.3–58.5%，
+  FBCNet **51.4±3.4%**（塌成随机）。**不能和论文 CS 53.7% 比**（论文只训 ses-01）。
+  175/175 早停；val ~32 trial，过拟合严重（S4ERP train 94.8 / val 71.1 / test 58.7）。
+- 实验二头条（先 25 人平均，再对 split seed 41–45 mean±std）：EEGNeX **64.5±0.4%** 单独领先；
+  S4ERP / Deformer / ATCNet / EEGNet 61.4–61.9%；DeepConvNet 59.9%；FBCNet 59.1%。
+  划分间 std 仅 0.4–1.0 点。S4ERP 仍过拟合（train 92.0 / val 63.0 / test 61.9）。
+  ATCNet best_epoch 中位 51、最大 101（比 821 的中位 406 早很多，但仍找到了 val 峰）。
+- 生成脚本：`scripts/package_shu2022_handoff.py`。
+- 下一步：等学长定口径；若要贴论文 CS 需补「只训 ses-01」一版；ATCNet 是否被 patience=25
+  限制可只对 exp2 重跑 patience=100。
+
+---
+
+## 2026-08-19 — ATCNet 全失败补跑（subject_ids 接口）
+
+- 两个 SHU 2022 作业 8-17 已全部 COMPLETED，但 `atcnet` 两边都是 **0/25**：
+  `TypeError: ATCNetClassifier.training_step() got an unexpected keyword argument 'subject_ids'`。
+  来源是 `2a09cf3` S4ERP-Adv 让 `e2e_trainer` 无条件把 `subject_ids` 传给所有 `uses_custom_loss` 模型；
+  ATCNet 用这个 hook 只加 Keras L2，不收这个参数。sweep 吞掉 cell 失败所以 job 仍是 exit 0。
+- 修：① ATCNet `training_step` 增加并忽略 `subject_ids`；② trainer 按 signature 探测后再传。
+- 测试 `test_atcnet_custom_loss_accepts_subject_ids` 过。无残留 atcnet cell/ckpt，从头训。
+- 提交 **41883** `shucs_atcnet`（实验一 25 cell）+ **41884** `shuxs_atcnet`（实验二 25 cell），gpu3node 两卡并行。
+
+---
+
+## 2026-08-16 — SHU 2022 两个新实验：协议锁定、代码落地、3 卡提交（在跑）
+
+- **学长定向**：从 WBCIC 3C 换到 **SHU 2022**（25 被试 × 5 session × 32ch，125 session 全 ok，
+  11988 trial）。跑 **7 个模型**（`eegnet_official` / `eegnex` / `eeg_deformer` / `atcnet` /
+  `deepconvnet` / `fbcnet` / `s4erp`；自研 `eegnet` 明确不跑，与官方版参数量都是 2,610）。
+- **实验一 cross-session**（`shu_cross_session_3to2_v1`）：每被试 **ses-01+02+03 训练 →
+  ses-04+05 测试**，25 次训练、逐测试 session 报。recipe 取 SHU 2022 论文原文（Adam **1e-3**、
+  batch **16**、NLLLoss、早停看**验证准确率**、**不做归一化**——原文 "the preprocessed data were
+  directly used"），**两处偏离已记进 config**：① 论文 CS 只用 ses-01 训练，我们用 3 个
+  session（训练池 96 → 286 trial），**所以不能拿来和论文 53.7% 比、更不能说"超过论文"**；
+  ② 300 epoch（论文 1500）。val 论文没写比例，取论文自己 WS 的 8:1 → 每被试约 254/32。
+- **实验二 cross-subject**（`shu_cross_subject_5fold_v1`）：5 折 **16 训练 / 4 验证 / 5 测试**
+  被试。**8:2:1 在 25 人 5 折下数学上不可能**（test=5 需要 40:10:5 共 55 人），16:4:5 保住了
+  821 的 train:val=4:1。`split_seeds` **41–45 只换划分**，训练种子固定 0。recipe 沿用 821
+  （Adam 1e-4 / batch 128 / 500 epoch），但 **patience 100 → 25**、**monitor macro_f1 →
+  accuracy**，故**与 821 的 3C 表不可横比**。
+- **⚠ patience=25 的已知风险**：821 实测 `atcnet` best_epoch **86–478（中位 406）**、
+  `eegnet_official` **48–486**，patience=100 才让它们跑到最优。25 很可能把这两个砍在早期，
+  拿到的是欠训练的数字而非模型真实水平。已写进 config 注释，出结果时要按这个口径解读。
+- **新增** `code/experiments/cross_session_e2e_protocols.py`：原 `session_protocols.run_cross_session`
+  跑的是**全部 20 个有向 session 对**、且用冻结的 `trainer.py`（无续跑、无曲线），不满足要求。
+  新模块每被试一个 cell，复用 `e2e_trainer` → 断点续跑 + best/last + 三曲线，产物结构与跨被试
+  一致。**跨被试新增 `split_seeds` 扫描**，cell 名带 `split<ss>`（单划分时保持旧名，821 产物不受影响）。
+- **测试**：新增 9 项跨 session 行为测试（含"测试 session 的 trial 绝不进 train/val"的字节级
+  泄漏守卫）+ 2 项 split_seed 测试，`tests/foundation/` **46 passed**。
+- **顺手修了一个既有回归**：`2a09cf3`（S4ERP-Adv）让 `eeg_foundation/adapter.py` 的 `forward`
+  在 DualCD 分支引用未赋值的 `out`，**所有 DualCD 变体前向必崩**，已修。剩 2 个 `s4erp_adv`
+  契约测试失败（它多返回 `subject_logits`，测试断言恰好三个键）——属 S4ERP-Adv 自身设计问题，未动。
+- **提交（3 卡）**：`bash scripts/slurm/submit_shu2022.sh` → 7 模型分 3 组，实验二用
+  `--dependency=afterany` 挂在实验一后，保证同时只占 3 卡。job **40278–40283**。
+  gpu2node 16 卡被别人占满（`Resources`），按交接文档 `scontrol update partition=gpu3node`
+  搬到 gpu04/gpu05 后起跑。
+- 实测 cross-session 单 epoch 仅 **0.4–0.7 s**，300 epoch 上限下单 cell 最多几分钟。
+  首批日志已见**严重过拟合**：eegnex 训练准确率 0.99 而验证卡在 0.5，第 29 epoch 早停
+  （265 个训练 trial、34 个验证 trial，准确率粒度 0.03，噪声大）。
+- 下一步：等实验一跑完 → 实验二自动接上；然后写 SHU 2022 专用 summarizer
+  （现有 `summarize_cross_subject.py` 是 DSGNet/3C 专用，`vs_paper` 表和 "11 folds" 都写死了）。
+
+---
+
+## 2026-08-13 — 821 run 交接到账号 `yuan` 并恢复四卡训练（50/77 → 在跑）
+
+- 新账号项目根 **`/share/home/yuan/SYX/eeg-mi-online`**（不是 `~/MI`），代码已在 `26bb950`，无需 pull。
+  新建 `code/configs/paths.local.yaml`：`shu_2c_root` → `/share/workspace2/moto_imagination/WBCIC_SHU`
+  （yuan 自己的共享盘目录，3C 源数据 `derivatives/3C dataset_processeddata` 全局可读）。
+- 交接照 `HANDOFF_821_RUN.md` §4 执行：**A 预处理数据本地重跑生成**（33/33 session `ok`、9899 trial、2.0G，
+  避开 manifest 绝对路径坑）；**B run 输出 rsync**（50 个 `result.json`、14M）；
+  **C-精简 rsync**（`atcnet__fold{5,8,10}` 的 `best/last.pt`、6.5M）。`FOLD_MODELS` 重数过，与脚本写死的一致，未改。
+- **新增 `scripts/verify_821_handoff.py`**（换机/换号后跑，比 `--dry-run` 强）：① 本地重跑的数据与来源账号
+  **逐位一致**（比对解码后 `X`/`y` 的 hash，不比 `.npz` 容器字节，避免 zlib 版本差异误报）；
+  ② 重建的 11 折与 50 个已完成 cell 记录的折 **50/50 一致**（防被试名单漂移导致「fold N 换了人」还被静默跳过）；
+  ③ 每折 8/2/1 被试、互不重叠、9899 trial 全用上。三项 PASS。
+- ⚠ **trial 数不是每折 7199:1800:900**：`sub-010/ses-01` 官方只有 299 trial，所以 sub-010 当验证的 fold 8 是
+  `7200:1799:900`、当测试的 fold 9 是 `7200:1800:899`。数据本身的性质，旧账号同数，8:2:1 是**被试**比例。
+- 提交 `38023–38030`（fold 3–10，`-t 48h`，patience 仍 **100** 未改）。
+  **交接正确性的最强证据**：fold 5 的 ATCNet 从拷来的 `last.pt` **续在 epoch 225**——`run_signature`
+  有任何差异都会直接抛错，没抛说明重跑生成的数据 + 当前 YAML 与旧账号指纹完全相同。
+- **QOS 实测（两个账号 QOS 完全一样 `32cpu4gpu64g`，「换号拿新配额」不成立）**：`MaxWall 48h`、
+  `cpu=32`、`gres/gpu=4` 都生效（每 job `-c 8` → 同时 4 个，其余 `QOSMaxCpuPerUserLimit`）；
+  但 **`mem=64G` 不生效**——旧号 4 个 job 各 `--mem=40G`（共 160G）同一秒起跑。
+  这条很关键：按 64/4=16G 去砍会贴上限 OOM（`pb821_g1` 实测 MaxRSS **15.6G**），**`--mem=40G` 不要动**。
+- `gpu2node` 16 张卡被别人占满时第 4 个 job 会 PENDING 且 reason 是 `(Resources)`。集群同构
+  （`gpu01–gpu05` 全是 RTX 4090 D 24G），`scontrol update jobid=<id> partition=gpu3node` 即可起来
+  （本次 f6 挪到 gpu04）。**不能写多分区**，association 已钉死分区。
+- 已完成 cell 的收敛位置（为将来调 patience 留证据）：`dualcd_s4_flatten` best_epoch **4–12**、
+  `dualcd_transformer` **6–10**、`s4erp` **9–59**（都跑到 ~105–160 epoch 才被 patience=100 停）；
+  而 `atcnet` best_epoch **86–478**（中位 406）、`eegnet_official` **48–486**。
+  → 缩小 patience 对三个 DualCD/S4 省得多，但对 ATCNet 很可能砍掉真正的最优点。**待定，本次未改。**
+- 下一步：等 77/77（`find .../cells -name result.json | wc -l`），再跑 `summarize_cross_subject.py`
+  + `plot_three_curves.py`。**搬完记得在旧账号 `chmod o-x /share/home/Zihang` 收回权限。**
+
+---
+
 ## 2026-08-12 夜 — 821 run 暂停 + 全量代码 push + 换账号交接文档
 
 - 用户要切到同集群另一个账号继续跑，先 `scancel 37966-37973`（队列只剩无关的 `37978 erp-all-scratch`）。

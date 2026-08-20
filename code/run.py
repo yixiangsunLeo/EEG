@@ -131,6 +131,9 @@ def main() -> None:
     # cross-subject end-to-end track (foundation_cross_subject)
     parser.add_argument("--split-protocol", choices=["loso", "kfold_subject", "holdout"],
                         help="cross-subject split scheme (overrides cross_subject.protocol)")
+    parser.add_argument("--split-seeds",
+                        help="comma-separated subject-partition seeds, e.g. 41,42,43,44,45 "
+                             "(distinct from --seeds, which sets the training seed)")
     parser.add_argument("--folds-subset", help="run only these fold ids, e.g. 0,1")
     parser.add_argument("--monitor", help="val metric used to pick best.pt (e.g. macro_f1)")
     parser.add_argument("--no-resume", action="store_true",

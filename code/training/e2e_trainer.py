@@ -45,6 +45,7 @@ of being distorted by dropout. ``train_loss`` remains the true full-epoch traini
 
 from __future__ import annotations
 
+import inspect
 import math
 import os
 import time
@@ -257,6 +258,18 @@ def train_end_to_end(
 
     uses_custom = bool(getattr(model, "uses_custom_loss", False))
     after_step = getattr(model, "after_optimizer_step", None)
+    # S4ERP-Adv's training_step takes ``subject_ids``; ATCNet's L2 hook does not.
+    # Probe once so a new custom-loss model cannot crash the whole sweep.
+    _accepts_subject_ids = False
+    if uses_custom:
+        try:
+            params = inspect.signature(model.training_step).parameters
+            _accepts_subject_ids = (
+                "subject_ids" in params
+                or any(p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values())
+            )
+        except (TypeError, ValueError):
+            _accepts_subject_ids = False
     mode = (spec.monitor_mode or "max").lower()
 
     ckpt_dir = Path(ckpt_dir) if ckpt_dir is not None else None
@@ -332,8 +345,8 @@ def train_end_to_end(
             yb = batch[1].to(device, non_blocking=True)
             subject_ids = batch[2].to(device, non_blocking=True) if len(batch) > 2 else None
             if uses_custom:
-                loss, parts = model.training_step(xb, yb, epoch=epoch - 1,
-                                                  subject_ids=subject_ids)
+                extra = {"subject_ids": subject_ids} if _accepts_subject_ids else {}
+                loss, parts = model.training_step(xb, yb, epoch=epoch - 1, **extra)
             else:
                 loss = F.cross_entropy(model(xb)["logits"], yb)
                 parts = {"ce": float(loss.detach().item())}
@@ -424,10 +437,11 @@ def train_end_to_end(
             extra = " ".join(f"{k}={v:.3f}" for k, v in sorted(loss_parts.items())) or "-"
             if train_metrics or test_metrics:
                 # Compact 3-curve line: the numbers the advisor wants to see side by side.
-                vtxt = "acc(train/val/test)=%s/%s/%s macro_f1(val)=%.4f" % (
+                vtxt = "acc(train/val/test)=%s/%s/%s %s(val)=%.4f" % (
                     f"{train_metrics.get('accuracy', float('nan')):.4f}",
                     f"{val_metrics.get('accuracy', float('nan')):.4f}",
                     f"{test_metrics.get('accuracy', float('nan')):.4f}",
+                    spec.monitor,
                     val_metrics.get(spec.monitor, float("nan")),
                 )
             else:

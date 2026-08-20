@@ -150,6 +150,25 @@ E2E: 端到端基础模型 × 跨被试（当前主线）
    · 三曲线铁律：**test 只做可视化，绝不参与模型选择**（守卫在 `e2e_trainer.py`）。
    · 大模型用 `train.micro_batch_per_model` 做梯度累积保持等效 batch，勿改成直接降 batch。
    · 汇总 `scripts/summarize_cross_subject.py`；绘图 `scripts/plot_three_curves.py`。
+- **SHU 2022 两个新实验（2026-08-16 学长确认，运行中）**：数据换到 SHU 2022（25 被试 ×
+  5 session × 32ch，125 session 全 ok），**7 个模型**（`eegnet_official`/`eegnex`/`eeg_deformer`/
+  `atcnet`/`deepconvnet`/`fbcnet`/`s4erp`；自研 `eegnet` 不跑）。
+  · **实验一 cross-session** `shu_cross_session_3to2.yaml`：每被试 ses-01+02+03 → ses-04+05，
+    SHU 2022 论文 recipe（Adam 1e-3/batch 16/NLLLoss/早停看 val accuracy/**不归一化**），
+    **两处偏离**：3 session 训练（论文只用 ses-01）+ 300 epoch（论文 1500）。
+    **⚠ 因此与论文 CS 53.7% 不可比，不得写成「超过论文」。**
+  · **实验二 cross-subject** `shu_cross_subject_5fold.yaml`：5 折 **16:4:5** 被试
+    （8:2:1 在 25 人 5 折下数学上不可能：test=5 需要 40:10:5 共 55 人），`split_seeds`
+    **41–45 只换划分**、训练种子固定 0；821 recipe + **patience 25**（821 是 100）+
+    **monitor accuracy**（821 是 macro_f1），**故与 `paper_baseline_3c_821_v1` 不可横比**。
+  · **⚠ patience=25 风险**：821 实测 atcnet best_epoch 中位 **406**、eegnet_official 到 486，
+    patience 25 很可能砍掉它们的最优点；弱结果要按「欠训练」解读，不是模型差。
+  · 新协议 `code/experiments/cross_session_e2e_protocols.py`（runner `cross_session_e2e`），
+    每被试一个 cell、走 `e2e_trainer`（续跑 + best/last + 三曲线）；跨被试新增 `split_seeds`
+    扫描，cell 名 `<model>__split<ss>__fold<k>__seed<s>`（单划分时保持旧名，821 产物不受影响）。
+  · 提交：`bash scripts/slurm/submit_shu2022.sh`（7 模型分 3 组 → 3 卡，实验二用 `afterany`
+    挂在实验一后）。gpu2node 满时按 `scontrol update jobid=<id> partition=gpu3node` 搬。
+  · 协议依据见 `inbox/cross_subject_protocol_research.md` §2.3（2026-08-16 已对 PMC 原文逐句核过）。
 - Future work: prototype memory, online test-then-update, full CAP-EEGNet,
  集成真实 EEG 基础模型 (CBraMod/REVE/TFM-Tokenizer) 跑 TTA。
 

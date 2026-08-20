@@ -11,10 +11,16 @@ The three curves come from ``history`` in each cell's ``result.json``, written b
   * ``val``        — validation split; the ONLY curve model selection ever saw
   * ``test``       — held-out subject, **monitoring only**, never used for selection
 
+Works on all three cell layouts this project produces:
+
+  * ``<model>__fold<k>__seed<s>``            cross-subject, one subject partition
+  * ``<model>__split<ss>__fold<k>__seed<s>`` cross-subject, several partitions swept
+  * ``<model>__sub-<id>__seed<s>``           cross-session, one model per subject
+
 Outputs, under ``<run_dir>/figures/``:
-  * ``curves__<model>__fold<k>.png``  — one panel per requested cell
-  * ``curves__<model>__mean.png``     — mean over folds (per-epoch, folds truncated to the
-                                        shortest one so the mean is over a constant set)
+  * ``curves__<model>__<cell>.png``  — one panel per requested cell
+  * ``curves__<model>__mean.png``    — mean over cells (per-epoch, cells truncated to the
+                                       shortest one so the mean is over a constant set)
 
 Usage:
   python scripts/plot_three_curves.py --run outputs/experiments/wbci_shu/paper_baseline_3c_821_v1
@@ -26,6 +32,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -37,6 +44,27 @@ import matplotlib.pyplot as plt  # noqa: E402
 SPLITS = [("train_eval", "train", "tab:blue"),
           ("val", "validation", "tab:orange"),
           ("test", "test (monitor only)", "tab:green")]
+
+
+#: ``<model>__[split<ss>__]{fold<k>|<subject>}__seed<s>`` — the model name may itself
+#: contain underscores (``eegnet_official``), so anchor on the ``__`` separators.
+CELL_TAG = re.compile(
+    r"^(?P<model>.+?)__(?:split(?P<split>\d+)__)?"
+    r"(?:fold(?P<fold>\d+)|(?P<subject>[^_]+(?:_[^_]+)*?))__seed(?P<seed>\d+)$"
+)
+
+
+def parse_cell_tag(tag: str) -> Optional[Dict[str, Optional[str]]]:
+    """Split a cell directory name into model / split seed / fold-or-subject / seed."""
+    m = CELL_TAG.match(tag)
+    if not m:
+        return None
+    d = m.groupdict()
+    unit = f"fold{d['fold']}" if d["fold"] is not None else str(d["subject"])
+    if d["split"] is not None:
+        unit = f"split{d['split']}__{unit}"
+    return {"model": d["model"], "split": d["split"], "fold": d["fold"],
+            "subject": d["subject"], "unit": unit}
 
 
 def _parse_list(value: Optional[str]) -> Optional[List[str]]:
@@ -110,7 +138,7 @@ def plot_model_mean(histories: List[List[Dict]], metric: str, title: str,
         if not cols:
             continue
         mean = [sum(c[i] for c in cols) / len(cols) for i in range(n)]
-        ax.plot(range(1, n + 1), mean, label=f"{label} (mean of {len(cols)} folds)",
+        ax.plot(range(1, n + 1), mean, label=f"{label} (mean of {len(cols)} cells)",
                 color=color, linewidth=1.6)
         plotted = True
     if not plotted:
@@ -151,13 +179,18 @@ def main() -> None:
     n_cell_png = 0
     skipped_no_curves = 0
 
+    unparsed = 0
     for result_json in sorted(cells_dir.glob(f"*__seed{args.seed}/result.json")):
-        tag = result_json.parent.name                       # <model>__fold<k>__seed<s>
-        model, fold_part, _ = tag.split("__")
-        fold = int(fold_part.replace("fold", ""))
+        tag = result_json.parent.name
+        parts = parse_cell_tag(tag)
+        if parts is None:
+            unparsed += 1
+            continue
+        model, unit = parts["model"], parts["unit"]
         if want_models and model not in want_models:
             continue
-        if want_folds is not None and fold not in want_folds:
+        if want_folds is not None and (parts["fold"] is None
+                                       or int(parts["fold"]) not in want_folds):
             continue
 
         detail = load_cell(result_json)
@@ -166,18 +199,21 @@ def main() -> None:
             skipped_no_curves += 1
             continue
 
-        test_subj = ",".join((detail.get("fold") or {}).get("test_subjects") or [])
+        fold_info = detail.get("fold") or {}
+        # cross-subject cells name held-out subjects; cross-session cells name sessions.
+        target = ",".join(fold_info.get("test_subjects")
+                          or fold_info.get("test_sessions") or [])
         best_epoch = (detail.get("train_info") or {}).get("best_epoch")
-        title = f"{model}  fold{fold} (test={test_subj})  —  {args.metric}"
+        title = f"{model}  {unit} (test={target})  —  {args.metric}"
         if plot_cell(history, args.metric, title,
-                     fig_dir / f"curves__{model}__fold{fold}.png", best_epoch):
+                     fig_dir / f"curves__{model}__{unit}.png", best_epoch):
             n_cell_png += 1
         per_model.setdefault(model, []).append(history)
 
     n_mean_png = 0
     for model, histories in sorted(per_model.items()):
         if plot_model_mean(histories, args.metric,
-                           f"{model} — {args.metric}, mean over folds",
+                           f"{model} — {args.metric}, mean over cells",
                            fig_dir / f"curves__{model}__mean.png"):
             n_mean_png += 1
 
@@ -185,6 +221,8 @@ def main() -> None:
     if skipped_no_curves:
         print(f"skipped {skipped_no_curves} cells without curve data "
               "(trained before train.curves was enabled)")
+    if unparsed:
+        print(f"skipped {unparsed} cell dirs whose name did not match the cell-tag pattern")
 
 
 if __name__ == "__main__":

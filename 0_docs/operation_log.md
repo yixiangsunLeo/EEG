@@ -3,7 +3,7 @@ title: "Operation Log"
 tags:
   - "#modality/eeg"
 created: "2026-06-10"
-updated: "2026-08-10"
+updated: "2026-08-20"
 status: "active"
 ---
 
@@ -11,6 +11,17 @@ status: "active"
 
 | Time | Action | Path | Note |
 |:---|:---|:---|:---|
+| 2026-08-20 | CREATE | `/share/home/yuan/SYX/SHU2022_两次实验结果_交给学长_20260820/` | 两套 SHU 2022 实验的交接包：原始 `result.json`、表、374 张图、中文解读；不含 2.4 GB 权重。 |
+| 2026-08-20 | CREATE | `scripts/package_shu2022_handoff.py` | 复制产物、汇总 CSV、画总览图 + 三曲线。 |
+| 2026-08-16 | CREATE | `code/experiments/cross_session_e2e_protocols.py` | SHU 2022 被试内跨 session 协议（每被试一模型，train/test session 列表可配），走 `e2e_trainer` 拿断点续跑 + 三曲线。 |
+| 2026-08-16 | CREATE | `code/configs/experiments/{shu_cross_session_3to2,shu_cross_subject_5fold}.yaml` | 学长确认的两个 SHU 2022 实验：ses01-03→ses04-05 跨 session；5 折跨被试 16:4:5 × split seed 41–45。 |
+| 2026-08-16 | CREATE | `tests/foundation/test_cross_session_e2e_protocol.py` | 跨 session 协议行为测试（9 项：折不相交、缺 session 跳过、验证集只来自训练 session、泄漏守卫、续跑）。 |
+| 2026-08-16 | CREATE | `scripts/slurm/submit_shu2022.sh` | 两个实验按 3 个模型组分到 3 张卡；实验二用 `--dependency=afterany` 挂在实验一后面，保证同时只占 3 卡。 |
+| 2026-08-16 | UPDATE | `code/runners.py`, `code/run.py` | 注册 `cross_session_e2e` runner；跨被试新增 `split_seeds` 扫描与 `--split-seeds` CLI。 |
+| 2026-08-16 | UPDATE | `code/experiments/cross_subject_protocols.py` | `split_seeds` 多划分扫描；cell tag 带 `split<ss>`（单划分时保持旧命名，821 产物不受影响）；结果行新增 `split_seed` 列。 |
+| 2026-08-16 | UPDATE | `scripts/plot_three_curves.py` | cell 名改用正则解析，兼容跨 session / 多划分 / 旧格式三种布局。 |
+| 2026-08-16 | UPDATE | `code/models/eeg_foundation/adapter.py` | 修 `2a09cf3` 引入的回归：`forward` 在 DualCD 分支未赋值 `out` 就引用，所有 DualCD 变体前向必崩。 |
+| 2026-08-16 | UPDATE | `code/training/e2e_trainer.py` | 日志里写死的 `macro_f1(val)` 改成按 `spec.monitor` 显示（本轮 monitor 是 accuracy）。 |
 | 2026-08-09 | CREATE | `code/models/atcnet/{__init__,adapter,_atcnet_raw,_bd_modules}.py` + `{README,UPSTREAM_README}.md` | 搬入 ATCNet（braindecode 上游 + 官方 README），接项目 dict 契约。 |
 | 2026-08-09 | CREATE | `code/configs/models/atcnet.yaml` | ATCNet 上游默认超参。 |
 | 2026-08-09 | UPDATE | `code/models/registry.py`, `code/configs/experiments/foundation_cross_subject_wbci_3c.yaml` | 注册 `atcnet` 并加入 3C 论文对齐实验（同 run_id，续跑跳过已完成 55 cells）。 |

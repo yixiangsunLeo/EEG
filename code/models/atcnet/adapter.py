@@ -121,9 +121,14 @@ class ATCNetClassifier(nn.Module):
                         else torch.stack(window_feats, dim=0).mean(dim=0))
         return {"logits": logits, "features": features, "confidence": None}
 
-    def training_step(self, x: torch.Tensor, y: torch.Tensor, epoch: int = 0
+    def training_step(self, x: torch.Tensor, y: torch.Tensor, epoch: int = 0,
+                      subject_ids: Optional[torch.Tensor] = None
                       ) -> Tuple[torch.Tensor, Dict[str, float]]:
-        """CE + the official Keras L2 kernel penalties (Keras adds them to the loss)."""
+        """CE + the official Keras L2 kernel penalties (Keras adds them to the loss).
+
+        ``subject_ids`` is accepted and ignored: the e2e trainer always has the
+        argument for S4ERP-Adv, and ATCNet has no subject-adversarial head.
+        """
         ce = F.cross_entropy(self.forward(x)["logits"], y)
         l2 = self.model.l2_penalty()
         return ce + l2, {"ce": float(ce.detach().item()),
