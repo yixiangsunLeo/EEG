@@ -34,7 +34,7 @@ run_id: "foundation_cross_subject_v1"
 data:
   name: "wbci_shu"
   variant: "eog_ecg_clean"
-  manifest: "processed_manifest"       # -> paths.processed_manifest (status=ok only)
+  manifest: "wbci_3c_processed_manifest"       # -> paths.processed_manifest (status=ok only)
   status_filter: ["ok"]
   n_channels: 58
   n_times: 1000                        # 4 s epoch [0,4) after the MI cue @ 250 Hz
