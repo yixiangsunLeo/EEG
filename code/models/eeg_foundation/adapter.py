@@ -230,8 +230,8 @@ class EEGFoundationClassifier(nn.Module):
     # ------------------------------------------------------------------ #
     @property
     def uses_custom_loss(self) -> bool:
-        """True for the DualCD variants, whose loss is not plain cross-entropy."""
-        return self.is_dualcd
+        """True for DualCD and adversarial variants (non-plain-CE losses)."""
+        return self.is_dualcd or "adv" in self.variant
 
     def training_step(self, x: torch.Tensor, y: torch.Tensor, epoch: int = 0,
                       subject_ids: Optional[torch.Tensor] = None
