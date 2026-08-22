@@ -451,6 +451,14 @@ class S4ERP(nn.Module):
         z = self.encoder(z)
         return z.reshape(z.size(0), -1)
 
+    def update_adv_lambda(self, epoch: int):
+        """Warmup schedule: lambda=0 for first warmup_epochs, then linear to lambda_adv."""
+        if epoch < self.adv_warmup_epochs:
+            self.grl.set_lambda(0.0)
+        else:
+            progress = (epoch - self.adv_warmup_epochs) / max(1, 50 - self.adv_warmup_epochs)
+            self.grl.set_lambda(self.lambda_adv * min(1.0, progress))
+
 
 # ── S4ERP + Adversarial Domain Adaptation ────────────────────────────────────
 
@@ -468,12 +476,15 @@ class S4ERPAdversarial(nn.Module):
     """
 
     def __init__(self, config, d_model=128, n_layers=4, state_dim=8,
-                 d_ff=256, dropout=0.1, n_subjects=11, lambda_adv=0.1):
+                 d_ff=256, dropout=0.1, n_subjects=11, lambda_adv=1.0,
+                 adv_warmup_epochs=5):
         super().__init__()
         self.patch_num = (config.seq_len - 28) // 2 + 1
         self.embedding = ShallowNetEmbedding(config.num_channels, d_model, dropout)
         self.encoder = S4EncoderCore(d_model, n_layers, state_dim, d_ff, dropout)
         self.feature_dim = d_model * self.patch_num
+        self.lambda_adv = lambda_adv
+        self.adv_warmup_epochs = adv_warmup_epochs
 
         # Task head (same as S4ERP)
         self.classifier = nn.Sequential(
@@ -485,7 +496,7 @@ class S4ERPAdversarial(nn.Module):
         # Mean-pool over patches to reduce feature_dim (e.g. 62336 -> 128),
         # keeping the discriminator small and the adversarial gradient stable.
         self.adv_d_model = d_model
-        self.grl = GradientReversalLayer(lambda_=lambda_adv)
+        self.grl = GradientReversalLayer(lambda_=0.0)  # start at 0, warmup later
         self.subject_discriminator = nn.Sequential(
             nn.Linear(d_model, 128),
             nn.ReLU(),
@@ -511,3 +522,11 @@ class S4ERPAdversarial(nn.Module):
         z = self.embedding(x)
         z = self.encoder(z)
         return z.reshape(z.size(0), -1)
+
+    def update_adv_lambda(self, epoch: int):
+        """Warmup schedule: lambda=0 for first warmup_epochs, then linear to lambda_adv."""
+        if epoch < self.adv_warmup_epochs:
+            self.grl.set_lambda(0.0)
+        else:
+            progress = (epoch - self.adv_warmup_epochs) / max(1, 50 - self.adv_warmup_epochs)
+            self.grl.set_lambda(self.lambda_adv * min(1.0, progress))

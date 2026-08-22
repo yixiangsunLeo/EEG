@@ -77,7 +77,7 @@ train:
 # Structural hyperparameters per variant (mirrors code/configs/models/<name>.yaml).
 model_params:
   s4erp: {d_model: 128, n_layers: 4, state_dim: 8, d_ff: 256, dropout: 0.1}
-  s4erp_adv: {d_model: 128, n_layers: 4, state_dim: 8, d_ff: 256, dropout: 0.1, n_subjects: 11, lambda_adv: 0.1}
+  s4erp_adv: {d_model: 128, n_layers: 4, state_dim: 8, d_ff: 256, dropout: 0.1, n_subjects: 11, lambda_adv: 1.0, adv_warmup_epochs: 5}
   dualcd_s4_pos: {d_model: 128, n_layers: 4, state_dim: 8, d_ff: 256, dropout: 0.1,
                   lambda_intra: 0.5, dino_out_dim: 256, proto_k: 5,
                   teacher_momentum: 0.996, warmup_epochs: 5,

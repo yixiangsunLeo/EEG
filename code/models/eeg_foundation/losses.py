@@ -248,10 +248,16 @@ class GradientReversalLayer(nn.Module):
     During forward pass: identity (passes features through unchanged).
     During backward pass: negates and scales the gradient, forcing the encoder
     to learn features that fool the domain discriminator.
+
+    Supports dynamic lambda scheduling via ``set_lambda()``.
     """
     def __init__(self, lambda_=0.1):
         super().__init__()
-        self.lambda_ = lambda_
+        self.lambda_ = float(lambda_)
+
+    def set_lambda(self, lambda_: float):
+        """Update the reversal strength (e.g. for warmup scheduling)."""
+        self.lambda_ = float(lambda_)
 
     def forward(self, x):
         return GradientReversalFunction.apply(x, self.lambda_)

@@ -248,6 +248,9 @@ class EEGFoundationClassifier(nn.Module):
                 warmup_epochs=self.config.warmup_epochs,
             )
             return loss, {k: float(v.detach().item()) for k, v in parts.items()}
+        # Update adversarial lambda (warmup schedule)
+        if hasattr(self.model, "update_adv_lambda"):
+            self.model.update_adv_lambda(epoch)
         out = self.forward(x)
         logits = out["logits"]
         ce_loss = F.cross_entropy(logits, y)
