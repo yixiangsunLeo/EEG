@@ -38,7 +38,7 @@ data:
   status_filter: ["ok"]
   n_channels: 58
   n_times: 1000                        # 4 s epoch [0,4) after the MI cue @ 250 Hz
-  n_classes: 2                         # left vs right hand MI, labels normalized to {0,1}
+  n_classes: 3                         # left vs right hand MI, labels normalized to {0,1}
   sfreq: 250
 
 # Order matters: the runner trains in this order, so the cheap supervised variant
