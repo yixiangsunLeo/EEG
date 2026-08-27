@@ -8,7 +8,7 @@
 #   DRY_RUN=1 bash scripts/slurm/submit_bench.sh shu  # print the plan, submit nothing
 #
 # WHY RELAY CHAINS
-#   `dualcd_transformer` needs ~10 h per cell x 10 cells = ~100 h on WBCIC-2C, but the QOS
+#   `dualcd_transformer` needs ~5.7 h per cell x 10 cells = ~57 h on WBCIC-2C, but the QOS
 #   caps a job at 48 h. Each group is therefore submitted N times with
 #   `--dependency=afterany:<previous>`; every link runs the SAME command, and the resume
 #   logic (finished cells have a `result.json`, an interrupted cell continues from `last.pt`)
@@ -19,8 +19,13 @@
 #   default is generous.
 #
 # GROUPING
-#   Balanced by measured per-cell cost (§7 of the plan). The three DINO/DualCD variants cost
-#   ~73% of the total, so they get a GPU each; everything cheap shares the fourth.
+#   Balanced by measured per-cell cost (§7 of the plan, re-measured from smoke 47237/47355).
+#   The three DINO/DualCD variants cost ~75% of the total, so they get a GPU each; everything
+#   cheap shares the fourth. `atcnet@noattn` rides along with the cheapest DINO group to even
+#   out the makespan -- on the first (over-)estimates g4 looked cheap, but ATCNet-family cells
+#   scale to WBCIC-2C at only ~2.5x rather than the assumed 4.5x, which moved the bottleneck
+#   onto g4. Grouping is scheduling only: cells are independent and all groups write to the
+#   same output dir under distinct `--tag-suffix`.
 #
 # WHY NOT ONE JOB WITH 4 GPUs
 #   `run_cross_subject` is single-process. Four independent single-GPU jobs is what actually
@@ -44,11 +49,26 @@ esac
 # group name -> comma-separated model entries. Estimated WBCIC-2C hours in the comment.
 GROUP_NAMES=(g1 g2 g3 g4)
 GROUP_MODELS=(
-  "dualcd_transformer"                                                              # ~100 h
-  "dualcd_s4_flatten"                                                               #  ~77 h
-  "dualcd_s4_timepatch,atcnet"                                                      #  ~90 h
-  "eegnet_official,eegnex,eeg_deformer,deepconvnet,fbcnet,s4erp,s4erp_dw@f64d2,s4erp_dw@f16d8,s4erp_dw@f16d2p,atcnet_s4,atcnet_s4@noattn,atcnet@tcn8,atcnet@nwin1,atcnet@noattn"  # ~122 h
+  "dualcd_transformer"                                                              # ~57 h
+  "dualcd_s4_flatten,atcnet@noattn"                                                 # ~56 h
+  "dualcd_s4_timepatch,atcnet"                                                      # ~56 h
+  "eegnet_official,eegnex,eeg_deformer,deepconvnet,fbcnet,s4erp,s4erp_dw@f64d2,s4erp_dw@f16d8,s4erp_dw@f16d2p,atcnet_s4,atcnet_s4@noattn,atcnet@tcn8,atcnet@nwin1"  # ~57 h
 )
+
+# An entry dropped from the groups is invisible: the sweep just finishes with fewer cells and
+# the Holm family silently shrinks. Check the union against the canonical roster instead.
+python3 - "${GROUP_MODELS[@]}" <<'PY'
+import sys
+from code.models.registry import BENCHMARK_MODEL_NAMES
+grouped = [m for arg in sys.argv[1:] for m in arg.split(",") if m]
+dupes = {m for m in grouped if grouped.count(m) > 1}
+missing = set(BENCHMARK_MODEL_NAMES) - set(grouped)
+extra = set(grouped) - set(BENCHMARK_MODEL_NAMES)
+if dupes or missing or extra:
+    sys.exit(f"ERROR: group list does not match BENCHMARK_MODEL_NAMES "
+             f"(duplicated={sorted(dupes)} missing={sorted(missing)} unknown={sorted(extra)})")
+print(f"roster check: {len(grouped)} entries across groups == BENCHMARK_MODEL_NAMES")
+PY
 
 mkdir -p logs/slurm outputs/experiments
 IDS_FILE="logs/slurm/bench_${DATASET}_job_ids.txt"
