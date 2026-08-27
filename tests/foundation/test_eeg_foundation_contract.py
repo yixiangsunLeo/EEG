@@ -28,11 +28,20 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from code.models.eeg_foundation import VARIANT_NAMES, normalize_trials  # noqa: E402
+from code.models.eeg_foundation.adapter import (  # noqa: E402
+    DEPRECATED_VARIANTS,
+    VARIANT_NAMES,
+)
+from code.models.eeg_foundation import normalize_trials  # noqa: E402
 from code.models.registry import build_model  # noqa: E402
 
 DIMS = dict(n_times=200, n_classes=2, sfreq=250)
 CHANNELS = [58, 32]  # WBCIC-SHU, SHU 2022
+
+#: Variants the project still maintains. Deprecated ones (see ``DEPRECATED_VARIANTS``) are
+#: kept only so already-published numbers stay reproducible; they are not held to the
+#: current contract and are covered by their own test below.
+MAINTAINED_VARIANTS = [v for v in VARIANT_NAMES if v not in DEPRECATED_VARIANTS]
 
 
 def _params(variant: str) -> dict:
@@ -43,7 +52,7 @@ def _params(variant: str) -> dict:
     return p
 
 
-@pytest.mark.parametrize("variant", VARIANT_NAMES)
+@pytest.mark.parametrize("variant", MAINTAINED_VARIANTS)
 @pytest.mark.parametrize("n_channels", CHANNELS)
 def test_forward_contract(variant: str, n_channels: int):
     torch.manual_seed(0)
@@ -66,7 +75,7 @@ def test_forward_contract(variant: str, n_channels: int):
     assert torch.allclose(out["logits"], out4["logits"], atol=1e-6)
 
 
-@pytest.mark.parametrize("variant", VARIANT_NAMES)
+@pytest.mark.parametrize("variant", MAINTAINED_VARIANTS)
 def test_training_step_is_finite_and_differentiable(variant: str):
     torch.manual_seed(0)
     model = build_model(variant, n_channels=32, params=_params(variant), **DIMS)
@@ -122,6 +131,39 @@ def test_s4erp_has_no_dualcd_hooks_active():
     x = torch.randn(2, 32, DIMS["n_times"])
     y = torch.tensor([0, 1])
     model.after_optimizer_step(x, y)  # must be a no-op, not an error
+
+
+@pytest.mark.parametrize("variant", ["s4erp", "s4erp_dw"])
+def test_plain_variants_are_not_treated_as_adversarial(variant: str):
+    """Regression: a stray ``update_adv_lambda`` on ``S4ERP`` crashed ``training_step``.
+
+    The method referenced ``self.grl`` / ``self.adv_warmup_epochs``, which only
+    ``S4ERPAdversarial`` has, and the adapter duck-typed on ``hasattr``. It stayed latent
+    because these variants use plain CE, so the trainer never called ``training_step``.
+    """
+    model = build_model(variant, n_channels=32, params=_params(variant), **DIMS)
+    assert not model.is_adversarial
+    assert not hasattr(model.model, "update_adv_lambda")
+    loss, parts = model.training_step(torch.randn(4, 32, DIMS["n_times"]),
+                                      torch.tensor([0, 1, 0, 1]), epoch=0)
+    assert set(parts) == {"ce"}
+    assert torch.isfinite(loss)
+
+
+@pytest.mark.parametrize("variant", sorted(DEPRECATED_VARIANTS))
+def test_deprecated_variants_still_build(variant: str):
+    """Deprecated models are kept so published numbers stay reproducible.
+
+    ``s4erp_adv`` deliberately returns a fourth key (``subject_logits``) and therefore does
+    NOT satisfy the ``{logits, features, confidence}`` contract — recorded here rather than
+    silently excluded, and the reason it is out of the benchmark roster.
+    """
+    model = build_model(variant, n_channels=32, params=_params(variant), **DIMS)
+    with torch.no_grad():
+        out = model(torch.randn(2, 32, DIMS["n_times"]))
+    assert {"logits", "features", "confidence"} <= set(out)
+    if variant == "s4erp_adv":
+        assert "subject_logits" in out
 
 
 def test_normalize_trials_is_fit_free():

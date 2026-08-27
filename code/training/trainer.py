@@ -160,7 +160,10 @@ def predict(model: nn.Module, loader: DataLoader, device: torch.device | str = "
     ps: List[np.ndarray] = []
     cs: List[np.ndarray] = []
     has_conf = True
-    for xb, yb in loader:
+    for batch in loader:
+        # Adversarial variants' train loader yields (X, y, subject_id); the monitoring
+        # curves feed that loader in here, so take the first two fields positionally.
+        xb, yb = batch[0], batch[1]
         xb = xb.to(device, non_blocking=True)
         out = model(xb)
         prob = torch.softmax(out["logits"], dim=1).cpu().numpy()

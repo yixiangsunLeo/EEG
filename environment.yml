@@ -1,0 +1,36 @@
+# Conda recipe for the environment every reported number was produced with.
+#
+#   conda env create -f environment.yml
+#   conda activate mi_torch_cu118
+#
+# The PyTorch cu118 wheels are not on conda-forge or PyPI, so they are installed from
+# PyTorch's own index in the `pip` section below. On a machine without an NVIDIA GPU, drop
+# the `+cu118` suffixes to get CPU wheels — enough for `--device cpu` smoke tests, not for
+# full runs (a single s4erp step takes ~10 s on CPU).
+#
+# Cluster note: on the 4090D cluster this env already exists as `mi_torch_cu118`; do NOT
+# recreate or mutate it, it is shared. See docs/PLAN_cross_subject_benchmark_and_fusion.md §7.1.
+name: mi_torch_cu118
+
+channels:
+  - conda-forge
+
+dependencies:
+  - python=3.10.18
+  - pip
+  - pip:
+      - --index-url https://download.pytorch.org/whl/cu118
+      - --extra-index-url https://pypi.org/simple
+      - torch==2.7.1+cu118
+      - torchvision==0.22.1+cu118
+      - torchaudio==2.7.1+cu118
+      - numpy==2.2.5
+      - scipy==1.15.3
+      - scikit-learn==1.7.1
+      - pandas==2.2.3
+      - matplotlib==3.10.0
+      - PyYAML==6.0.2
+      - mne==1.10.0
+      - seaborn==0.13.2
+      - tqdm==4.67.1
+      - pillow==11.0.0

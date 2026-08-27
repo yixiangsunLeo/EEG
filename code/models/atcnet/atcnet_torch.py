@@ -323,6 +323,9 @@ class ATCNetOfficial(nn.Module):
 
         feat = self.conv_block(x).squeeze(-1)        # [B, F2, Tc]
         feat = feat.permute(0, 2, 1)                 # [B, Tc, F2]
+        # Everything downstream reads this tensor, so it is the representation the
+        # sliding windows actually share. Exposed for the adversarial variant.
+        self.last_conv_features = feat
 
         window_feats: List[torch.Tensor] = []
         for i in range(self.n_windows):

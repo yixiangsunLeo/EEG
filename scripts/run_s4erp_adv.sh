@@ -9,7 +9,7 @@
 #SBATCH --error=logs/s4erp_adv_%j.err
 
 cd /share/home/yuan/SYX/eeg-mi-online
-source activate ly_torch
+source activate mi_torch_cu118
 
 python code/run.py \
     --config code/configs/experiments/foundation_cross_subject.yaml \

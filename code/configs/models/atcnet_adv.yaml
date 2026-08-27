@@ -1,0 +1,39 @@
+# ATCNet + subject-adversarial head (GRL + subject discriminator, DANN-style).
+# Backbone hyperparameters are ATCNet's official defaults — identical to atcnet.yaml, so
+# `atcnet` is the exact paired control for `atcnet_adv`.
+#
+# adv_tap: where the discriminator reads. "conv" = the [B, Tc*F2] block that all five
+#   sliding windows share (17*32 = 544-d at 58ch/1000pt). "fused" = the [B, tcn_filters]
+#   vector the dense heads consume (32-d), which sits DOWNSTREAM of the window split and
+#   is therefore not the shared representation at all.
+#   Default is "conv": subject identity (electrode placement, head shape, impedance) lives
+#   in the spatio-temporal filters, so that is where invariance should be enforced.
+#   "fused" is kept only as an ablation.
+#
+# lambda_adv / adv_warmup_epochs / adv_ramp_epochs mirror s4erp_adv so the two adversarial
+#   arms are comparable: lambda is 0 for the first `adv_warmup_epochs`, then ramps linearly
+#   to `lambda_adv` by epoch `adv_ramp_epochs`.
+name: "atcnet_adv"
+
+# ---- ATCNet backbone (official Altaheri/EEG-ATCNet defaults) ----
+eegn_F1: 16
+eegn_D: 2
+eegn_kernelSize: 64
+eegn_poolSize: 7
+eegn_dropout: 0.3
+attention: "mha"
+tcn_depth: 2
+tcn_kernelSize: 4
+tcn_filters: 32
+tcn_dropout: 0.3
+n_windows: 5
+fuse: "average"
+use_official_l2: true
+
+# ---- adversarial head ----
+n_subjects: 11
+lambda_adv: 1.0
+adv_warmup_epochs: 5
+adv_ramp_epochs: 50
+adv_hidden: 64
+adv_tap: "conv"

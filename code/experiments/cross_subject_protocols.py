@@ -55,6 +55,7 @@ from torch.utils.data import ConcatDataset, DataLoader, Subset, TensorDataset
 
 from ..datasets.session_splits import SessionRecord, group_by_subject, normalize_labels
 from ..models.eeg_foundation.adapter import normalize_trials
+from ..models.model_specs import safe_tag
 from ..models.registry import build_model
 from ..training.e2e_trainer import BEST_CKPT, LAST_CKPT, CellPaths, E2ESpec, train_end_to_end
 from ..training.trainer import predict
@@ -65,6 +66,39 @@ from .session_protocols import evaluate_predictions
 
 PROTOCOLS = ("loso", "kfold_subject", "holdout")
 VAL_MODES = ("subjects", "trials", "sessions")
+
+#: Bump whenever ``cell_signature``'s payload changes. A stored cell written under an older
+#: version cannot be compared against a signature computed by this code, so a resume attempt
+#: must fail loudly rather than silently mix two recipes into one table.
+#:
+#: v2 (2026-08-27) added the early-stopping settings — see ``_stopping_identity``. Under v1
+#: a run that lowered ``patience`` silently reused cells trained with the old value, putting
+#: two different model-selection rules in one results table with no warning.
+SIGNATURE_VERSION = 2
+
+
+def _stopping_identity(spec: E2ESpec) -> Dict[str, object]:
+    """The parts of the stopping rule that define a cell's identity.
+
+    ``early_stopping_patience`` **always** counts: it decides which epoch becomes
+    ``best.pt``, so two cells with different patience can report different results from the
+    very same optimization trajectory. That is the silent failure v2 exists to prevent.
+
+    ``max_epochs`` counts **only when a scheduler is active**, because its role depends on
+    the scheduler:
+
+    * ``scheduler: none`` (this project's recipe) — it is a pure upper bound. Raising it and
+      resuming is a strict continuation of the same trajectory, which is a legitimate and
+      useful operation (and how a wall-clock-killed job is restarted). Including it would
+      forbid that for no methodological gain.
+    * ``scheduler: cosine`` — it *is* the annealing horizon, so changing it changes the
+      learning rate at every remaining step. A cell resumed under a different horizon is on
+      a different trajectory and must not be mixed with the original.
+    """
+    ident: Dict[str, object] = {"early_stopping_patience": spec.early_stopping_patience}
+    if str(spec.scheduler or "none").lower() not in ("none", ""):
+        ident["max_epochs"] = spec.max_epochs
+    return ident
 # Paper-aligned default for WBCIC-SHU / SHUv5 3C LOSO (train ses1+2, val ses3).
 DEFAULT_TRAIN_SESSIONS = ("ses-01", "ses-02")
 DEFAULT_VAL_SESSIONS = ("ses-03",)
@@ -76,9 +110,11 @@ CROSS_SUBJECT_RESULT_COLUMNS: List[str] = [
     "monitor", "best_score", "best_epoch", "epochs_run", "early_stopped",
     "n_params", "train_seconds",
     # metrics of the BEST checkpoint on the held-out subject
-    "accuracy", "balanced_accuracy", "macro_f1", "auc", "nll", "brier", "ece",
+    "accuracy", "balanced_accuracy", "macro_f1", "auc", "cohen_kappa",
+    "nll", "brier", "ece",
     # metrics of the LAST-epoch checkpoint on the same subject
     "last_accuracy", "last_balanced_accuracy", "last_macro_f1", "last_auc",
+    "last_cohen_kappa",
     "status", "error",
 ]
 
@@ -410,8 +446,13 @@ def cell_signature(fold: CrossSubjectFold, *, dataset: str, model_name: str,
     different ``--folds`` / ``--max-subjects`` / model params into the same output dir, and
     ``fold0`` now means a different set of subjects while a ``last.pt`` from the old split
     is still sitting there.
+
+    The early-stopping settings are part of the fingerprint because they decide *which*
+    epoch becomes ``best.pt``; see ``_stopping_identity`` for why ``max_epochs`` is included
+    conditionally while ``early_stopping_patience`` always is.
     """
     payload = {
+        "signature_version": SIGNATURE_VERSION,
         "dataset": dataset, "model": model_name, "protocol": protocol,
         "val_mode": val_mode, "seed": int(seed), "fold": fold.fold,
         "train_subjects": sorted(fold.train_subjects),
@@ -426,6 +467,7 @@ def cell_signature(fold: CrossSubjectFold, *, dataset: str, model_name: str,
         "optimizer": spec.optimizer, "lr": spec.lr, "weight_decay": spec.weight_decay,
         "batch_size": spec.batch_size, "scheduler": spec.scheduler,
         "grad_clip_norm": spec.grad_clip_norm, "val_fraction": spec.val_fraction,
+        **_stopping_identity(spec),
         # Accumulation changes BatchNorm statistics, so it is part of the cell's identity.
         "micro_batch_size": spec.micro_batch_size,
     }
@@ -465,10 +507,17 @@ def run_cell(
     result_json: Path,
     protocol: str = "kfold_subject",
     val_mode: str = "subjects",
+    split_seed: int = 0,
     resume: bool = True,
     logger=None,
 ) -> List[Dict[str, object]]:
-    """Train + evaluate one (model, fold, seed) cell; return one row per test subject."""
+    """Train + evaluate one (model, fold, seed) cell; return one row per test subject.
+
+    ``split_seed`` is recorded in every row and in ``result.json``. Without it the per-cell
+    record cannot tell which subject partition produced it, and a summarizer reading
+    ``result.json`` (the authoritative record) has no way to compute the spread across
+    partitions — which is the whole point of sweeping ``split_seeds``.
+    """
     fold.assert_disjoint()
     paths = CellPaths(ckpt_dir=Path(ckpt_dir), result_json=Path(result_json))
     signature = cell_signature(fold, dataset=dataset, model_name=model_name,
@@ -477,6 +526,15 @@ def run_cell(
     if resume and paths.is_complete():
         with open(paths.result_json, "r", encoding="utf-8") as f:
             done = json.load(f)
+        stored_version = int(done.get("signature_version", 1))
+        if stored_version != SIGNATURE_VERSION:
+            raise RuntimeError(
+                f"{paths.result_json} was written with cell-signature v{stored_version}, "
+                f"but this code computes v{SIGNATURE_VERSION}. The payload changed, so the "
+                "two are not comparable — v2 added max_epochs and early_stopping_patience, "
+                "which v1 let you change without invalidating a cell. Historical runs are "
+                "read-only (AGENTS.md 'do not overwrite completed *_v1'); use a fresh --out."
+            )
         stored = done.get("cell_signature")
         if stored is not None and stored != signature:
             raise RuntimeError(
@@ -568,6 +626,10 @@ def run_cell(
     best_state = (torch.load(best_ck, map_location=device, weights_only=False)["model_state"]
                   if best_ck.exists() else None)
 
+    pred_dump: Dict[str, List] = {"subject": [], "session": [], "y_true": [],
+                                  "y_pred_best": [], "y_pred_last": [],
+                                  "probs_best": [], "probs_last": []}
+
     for subj in fold.test_subjects:
         sd = subject_data[subj]
         test_ds, _ = _make_dataset(subject_data, [subj])
@@ -582,9 +644,21 @@ def run_cell(
         y_true_l, y_pred_l, probs_l, _ = predict(model, test_loader, device=device)
         last_metrics = evaluate_predictions(y_true_l, y_pred_l, probs_l)
 
+        # `_make_dataset` preserves subject-trial order and the loader is unshuffled, so
+        # these arrays align element-wise with `sd.session_of_trial`.
+        n = int(np.asarray(y_true).size)
+        pred_dump["subject"].append(np.full(n, subj, dtype="<U16"))
+        pred_dump["session"].append(np.asarray(sd.session_of_trial[:n], dtype="<U16")
+                                    if sd.session_of_trial else np.full(n, "", dtype="<U16"))
+        pred_dump["y_true"].append(np.asarray(y_true, dtype=np.int16))
+        pred_dump["y_pred_best"].append(np.asarray(y_pred, dtype=np.int16))
+        pred_dump["y_pred_last"].append(np.asarray(y_pred_l, dtype=np.int16))
+        pred_dump["probs_best"].append(np.asarray(probs, dtype=np.float32))
+        pred_dump["probs_last"].append(np.asarray(probs_l, dtype=np.float32))
+
         rows.append({
             "dataset": dataset, "model": model_name, "protocol": protocol,
-            "fold": fold.fold, "seed": int(seed),
+            "fold": fold.fold, "seed": int(seed), "split_seed": int(split_seed),
             "n_train_subjects": len(fold.train_subjects),
             "n_val_subjects": len(fold.val_subjects), "test_subject": subj,
             "n_train": n_train, "n_val": n_val, "n_test": sd.n_trials,
@@ -598,6 +672,7 @@ def run_cell(
             "last_balanced_accuracy": float(last_metrics["balanced_accuracy"]),
             "last_macro_f1": float(last_metrics["macro_f1"]),
             "last_auc": float(last_metrics["auc"]),
+            "last_cohen_kappa": float(last_metrics["cohen_kappa"]),
             "status": "ok", "error": "",
         })
         per_subject_detail.append({"test_subject": subj, "n_trials": sd.n_trials,
@@ -608,14 +683,34 @@ def run_cell(
     if best_state is not None:
         model.load_state_dict(best_state)
 
+    # Per-trial predictions, as a compressed npz beside result.json (~100 kB/cell).
+    #
+    # These CANNOT be recovered later without retraining, and they are what every
+    # trial-level analysis needs: McNemar tests between models, confusion matrices,
+    # post-hoc ensembling, and per-session breakdowns of a test subject (WBCIC-SHU's
+    # within-session accuracy rises across sessions because subjects *learn* MI — see
+    # 4_experiments/CROSS_SUBJECT_PROTOCOL_MEMO.md §2.4 — so session labels matter).
+    #
+    # Note the *subject-level* paired tests that decide "model A beats model B" do not need
+    # this file: those run on the per-subject rows above. This is for the trial-level layer.
+    pred_path = Path(paths.result_json).with_name("predictions.npz")
+    np.savez_compressed(
+        pred_path,
+        **{k: np.concatenate(v, axis=0) for k, v in pred_dump.items() if v},
+        classes=np.arange(int(data_dims["n_classes"]), dtype=np.int16),
+    )
+
     save_json({
         "dataset": dataset, "model": model_name, "fold": asdict(fold), "seed": int(seed),
-        "protocol": protocol, "cell_signature": signature, "data_dims": data_dims,
+        "split_seed": int(split_seed),
+        "protocol": protocol, "cell_signature": signature,
+        "signature_version": SIGNATURE_VERSION, "data_dims": data_dims,
         "model_params": model_params, "model_desc": desc, "spec": asdict(spec),
         "val_mode": val_mode,
         "train_info": {k: v for k, v in info.items() if k != "history"},
         "history": info["history"], "per_subject": per_subject_detail, "rows": rows,
         "checkpoints": {"best": str(paths.best), "last": str(paths.last)},
+        "predictions": str(pred_path),
         "completed_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
     }, paths.result_json)
     return rows
@@ -721,8 +816,10 @@ def run_cross_subject(
                 for seed in seeds:
                     # The split seed is part of the tag only when several are swept, so
                     # single-split runs (e.g. paper_baseline_3c_821_v1) keep their layout.
+                    # `safe_tag` turns an alias `atcnet@tcn8` into `atcnet-tcn8` for paths;
+                    # the logical name (with `@`) stays in rows and the cell signature.
                     split_part = f"split{ss}__" if multi_split else ""
-                    tag = f"{model_name}__{split_part}fold{fold.fold}__seed{int(seed)}"
+                    tag = f"{safe_tag(model_name)}__{split_part}fold{fold.fold}__seed{int(seed)}"
                     ck = ((Path(ckpt_root) / tag) if ckpt_root is not None
                           else (cells_dir / tag / "ckpt"))
                     try:
@@ -731,11 +828,11 @@ def run_cross_subject(
                             model_params=mp, data_dims=data_dims, spec=spec_m,
                             seed=int(seed), device=device, ckpt_dir=ck,
                             result_json=cells_dir / tag / "result.json",
-                            protocol=protocol, val_mode=val_mode, resume=resume,
-                            logger=logger,
+                            protocol=protocol, val_mode=val_mode, split_seed=ss,
+                            resume=resume, logger=logger,
                         )
                         for r in rows:
-                            r.setdefault("split_seed", ss)
+                            r.setdefault("split_seed", ss)   # legacy cells lack the key
                         all_rows += rows
                     except Exception as exc:  # keep the sweep alive; record and continue
                         msg = f"{type(exc).__name__}: {exc}"

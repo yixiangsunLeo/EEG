@@ -156,6 +156,29 @@ class FBCNet(nn.Module):
         x = torch.flatten(x, start_dim=1)
         return self.dropout(x)
 
+    def default_lr(self) -> float:
+        """1e-3 — the value this model has always received via ``E2ESpec``'s fallback."""
+        return 1e-3
+
+    def describe(self) -> dict:
+        """Model card for the results table.
+
+        Without this, ``run_cell`` records ``n_params = 0``. ``n_trainable_params`` is
+        reported separately because the filter bank is fixed (``requires_grad=False``), so
+        the two numbers genuinely differ for this model.
+        """
+        return {
+            "name": "fbcnet",
+            "source": "Mane et al. 2021 (fixed filter bank + SCB + log-variance)",
+            "n_params": sum(p.numel() for p in self.parameters()),
+            "n_trainable_params": sum(p.numel() for p in self.parameters()
+                                      if p.requires_grad),
+            "feature_dim": self.feature_dim,
+            "n_channels": self.config.n_channels,
+            "n_times": self.config.n_times,
+            "n_classes": self.config.n_classes,
+        }
+
     def forward(self, x: torch.Tensor) -> dict:
         feats = self._features(x)
         logits = self.classifier(feats)

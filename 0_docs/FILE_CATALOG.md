@@ -3,13 +3,32 @@ title: "File Catalog"
 tags:
   - "#modality/eeg"
 created: "2026-06-10"
-updated: "2026-08-04"
+updated: "2026-08-27"
 status: "active"
 ---
 
 # File Catalog
 
 新增 source/config/doc/结果文件时更新本表。
+
+## 2026-08-27 新增（跨被试 benchmark + ATCNet×S4ERP 融合，P0 阶段）
+
+| 路径 | 作用 |
+|:---|:---|
+| `docs/PLAN_cross_subject_benchmark_and_fusion.md` | **本轮权威计划**：27 条已锁定决定、两个数据集协议（6:2:2）、17 个模型条目、配方、算力、P0–P4 步骤、实验清单审计。 |
+| `code/models/model_specs.py` | 模型结构参数的**单一来源** + **模型别名机制** `name@variant`（`defaults`/`per_dataset`/`variants` 合并；`safe_tag` 给路径用）。 |
+| `code/models/atcnet/atcnet_s4.py` | **融合方向 B**：ATCNet 卷积块 + 一个共享因果 SSM 替 5 个独立 TCN；含 `reinit_log_dt_for_length`（短序列时间常数重标定）与因果掩码 MHA。`atcnet_torch.py` 未改动。 |
+| `code/summaries/cross_subject_bench.py` | 跨被试统计层：per-subject 矩阵、配对 Wilcoxon + Holm、Cohen's `d_z`、Friedman + Nemenyi CD、按 val 选变体、跨数据集主表。 |
+| `code/configs/models/{s4erp_dw,atcnet_s4}.yaml` | 两个融合模型的标准超参 + 变体定义（`s4erp_dw` 三个 F1/D 变体；`atcnet_s4@noattn`）。 |
+| `code/configs/experiments/wbci_2c_cross_subject_bench.yaml` | **WBCIC-SHU 2C（51 被试）跨被试 benchmark**，17 条目 × 5 折 × split 41/42。 |
+| `code/configs/experiments/shu_cross_subject_bench.yaml` | 同上，SHU 2022（25 被试），15:5:5 精确 6:2:2。 |
+| `scripts/slurm/bench_gpu.sbatch` | 单个 benchmark GPU job（1 卡 / 8 CPU / 40G / 47.5h + sacct 快照）。 |
+| `scripts/slurm/submit_bench.sh` | 17 条目分 4 卡 + 每组 48h 自动重投链（`--dependency=afterany`）+ 末尾 summarize job。 |
+| `tests/models/test_fusion_and_specs.py` | 41 个测试：别名解析、参数解析、两个融合模型的参数量/因果性/时间常数、签名守卫、统计工具。 |
+| `LICENSE` | MIT + 第三方模型（ATCNet Apache-2.0 等）+ 数据来源条款。 |
+| `requirements.txt` / `environment.yml` | 精确复现环境（`mi_torch_cu118`，torch 2.7.1+cu118）。 |
+| `pyproject.toml` | pytest / ruff 配置（vendored 上游目录排除在 lint 外）。 |
+| `REPRODUCE.md` | 逐条复现命令、smoke 验收脚本、统计口径、确定性说明。 |
 
 ## 根目录
 
@@ -18,6 +37,8 @@ status: "active"
 | `AGENTS.md` | 唯一权威灵魂记忆。 |
 | `CLAUDE.md` | 兼容入口，指向 AGENTS.md（供 Claude Code 等原生读取）。 |
 | `README.md` | 人类入口与结构总览。 |
+| `REPRODUCE.md` | 复现指南（环境 / 数据 / smoke / 全量 / 表格 / 确定性）。 |
+| `LICENSE` | 许可与第三方代码、数据条款。 |
 | `FOUNDATION_E2E_ROUTE_PLAN.md` | **当前主线路线（2026-08-04）**：端到端基础模型（5 个 S4/DINO-DualCD）× 跨被试 × 双数据集分开训练。含融合成果映射、运行命令、checkpoint/断点续跑契约、协议默认值与 7 个待学长确认问题、7 条硬约束。 |
 | `PHASE3_ROUTE_PLAN.md` | 上一条主线 Phase 3 路线 v2.1（Oracle 先裁决；学长已批 A0/A1）；**paused，不是废弃**。 |
 | `proposal.md` | 项目提案。 |
@@ -80,6 +101,8 @@ status: "active"
 | `scripts/plot_three_curves.py` | 从 `result.json` 的 `history` 画 per-epoch train/val/test 三曲线（per-cell + 跨折均值）。 |
 | `scripts/summarize_cross_subject.py` | 跨被试 run 汇总：`tables/{per_cell,per_model,vs_paper}.csv` + `REPORT_TABLE.md`（内嵌论文 Table II SHUv5 数字作对照）。 |
 | `scripts/package_shu2022_handoff.py` | 把 SHU 2022 跨会话/跨被试两套 run 打成交给学长的文件夹（表、图、复制 result.json）。 |
+| `scripts/plot_training_diagnostics.py` | 从 `result.json` 画 acc/loss，从 `best.pt` 画可学习参数直方图；写出 `outputs/experiments/shu/training_viz_v1/`。含 DualCD Flatten/Transformer。 |
+| `scripts/slurm/submit_shu_cross_subject_dualcd.sh` | 实验二补跑 DualCD：隔离 smoke（2 epoch）`afterok` 后两卡全量 Flatten / Transformer。 |
 | `code/configs/experiments/{foundation_cross_subject,shu_foundation_cross_subject}.yaml` | **端到端主线双数据集配置**（WBCIC 58ch / SHU 32ch，分开跑；协议段标注 pending_advisor_confirmation）。 |
 | `tests/foundation/test_eeg_foundation_contract.py` | 5 模型 × 双通道数的 forward 契约、loss 可反传、teacher EMA/prototype 更新、归一化 fit-free、参数量对齐学长表格（19 passed, CPU）。 |
 | `tests/foundation/test_cross_subject_protocol.py` | 划分互斥/决定性、只写 best+last、完成 cell 跳过、中断 cell 续跑、换了划分/超参后拒绝续跑、**测试被试不进 train/val**、通道不匹配报错（13 passed, CPU）。 |

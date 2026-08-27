@@ -1,0 +1,134 @@
+experiment:
+  name: "foundation_cross_subject"      # same runner; 2C data + kfold_subject 6:2:2
+  source_config: "configs/experiments/wbci_2c_cross_subject_bench.yaml"
+
+# =====================================================================
+# WBCIC-SHU **2C** (51 subjects) — CROSS-SUBJECT BENCHMARK + ATCNet x S4ERP FUSION.
+# Plan: docs/PLAN_cross_subject_benchmark_and_fusion.md (all 27 decisions).
+#
+# WHY THIS DATASET
+#   51 subjects, 148 ok sessions, 29,600 trials, perfectly class-balanced (14800:14800).
+#   It has NEVER been used cross-subject, and it is the only cohort large enough to make
+#   model comparisons statistically meaningful: with 11 subjects (the 3C cohort) the
+#   detectable paired difference is ~9pp while the entire model range is 6.2pp, i.e. no two
+#   models can be distinguished. At 51 subjects the paired standard error drops to ~0.7pp.
+#   2C and 3C are DISJOINT cohorts (2C = subjects 1-51, 3C = subjects 52-62; Yang et al.,
+#   Sci Data 12:488, 2025), not a subset relation.
+#
+# SPLIT — 6:2:2 by SUBJECT, aligned to ERP-Benchmark (arXiv:2601.00573)
+#   np.array_split(51, 5) -> 11,10,10,10,10 test subjects per fold. Of the non-test pool,
+#   10 are validation subjects: fold 0 is 30:10:11, folds 1-4 are 31:10:10, i.e. ~6:2:2.
+#   Strict zero-shot: a test subject appears in neither train nor val (asserted per fold).
+#
+# SEEDS — two different things, do not conflate:
+#   * `cross_subject.split_seeds: [41, 42]` re-draw the SUBJECT PARTITION. The values come
+#     from ERP-Benchmark, which uses seeds 41-45 for exactly this ("random subject
+#     partitioning across different seeds"). Every subject is tested once per split seed.
+#   * `train.seeds: [0]` is the TRAINING seed (init + batch order) and is held fixed, so the
+#     reported spread is the spread of the split, not of the initialization.
+#
+# RECIPE — the already-run recipe (paper_baseline_3c_821_v1 / shu_cross_subject_5fold_v1):
+#   Adam 1e-4, batch 128, no scheduler / weight decay / gradient clipping.
+#   `max_epochs: 500` is only a ceiling: with patience 25 all 225 cells of the previous SHU
+#   run stopped early (epochs_run median 34-113, observed max ~272), so it is never reached.
+#   `monitor: macro_f1` matches ERP-Benchmark's "best F1 Score".
+#   KNOWN DEVIATION from ERP-Benchmark: it uses AdamW + CosineAnnealingLR + 200 epochs.
+#   Recipe changes the model RANKING (RESULTS_TRUTH §5: ATCNet +2.46pp, S4ERP -3.58pp,
+#   opposite signs), so this must be stated as a limitation; the AdamW arm is deferred (P4-4).
+#
+# MODELS — 17 entries in ONE run so any two are pairwise comparable on identical
+#   (split_seed, fold, subject) triples. Structural params come from
+#   code/configs/models/<name>.yaml (defaults + per_dataset + variants); `model_params` below
+#   is intentionally EMPTY so there is exactly one source of truth. The resolved dict is
+#   written to <out>/resolved_model_params.json.
+#     group 1 (10) published + classic baselines and the S4/DINO family
+#     group 2 (3)  s4erp_dw@*   fusion direction A: ATCNet depthwise spatial front-end
+#     group 3 (1)  atcnet_s4    fusion direction B: one shared causal SSM
+#     group 4 (3)  atcnet@*     explanatory ablations
+#   Deprecated and excluded: eegnet (self-made), cap_eegnet, s4erp_adv, atcnet_adv,
+#   dualcd_s4_pos. Reasons in code/models/registry.py DEPRECATED_MODELS.
+#
+# CURVES — per-epoch train/val/test accuracy. The test curve is MONITORING ONLY: best.pt and
+#   early stopping read the val loader alone (guard in code/training/e2e_trainer.py).
+#
+# Run (GPU / Slurm; never on the login node):
+#   python code/run.py --dry-run --config code/configs/experiments/wbci_2c_cross_subject_bench.yaml
+#   bash scripts/slurm/submit_bench.sh wbci_2c
+# =====================================================================
+
+run_id: "wbci_2c_cross_subject_bench_v1"
+
+data:
+  name: "wbci_shu_2c"
+  manifest: "processed_manifest"   # -> WBCIC_SHU/processed/eog_ecg_clean/processed_manifest.csv
+  status_filter: ["ok"]
+  n_channels: 58
+  n_times: 1000
+  n_classes: 2                     # left vs right hand grasping
+  sfreq: 250
+
+models: [
+  # ---- group 1: benchmark baselines ----
+  "eegnet_official", "eegnex", "eeg_deformer", "atcnet",
+  "deepconvnet", "fbcnet",
+  "s4erp", "dualcd_s4_flatten", "dualcd_transformer", "dualcd_s4_timepatch",
+  # ---- group 2: fusion direction A (advisor-specified main line) ----
+  "s4erp_dw@f64d2", "s4erp_dw@f16d8", "s4erp_dw@f16d2p",
+  # ---- group 3: fusion direction B ----
+  "atcnet_s4",
+  # ---- group 4: ATCNet explanatory ablations ----
+  "atcnet@tcn8", "atcnet@nwin1", "atcnet@noattn",
+]
+
+cross_subject:
+  protocol: "kfold_subject"
+  n_folds: 5                     # 51 subjects -> 11,10,10,10,10 test subjects
+  val_mode: "subjects"           # validation = held-out TRAINING subjects (strict zero-shot)
+  n_val_subjects: 10             # -> ~6:2:2
+  split_seeds: [41, 42]
+
+train:
+  # ---- already-run recipe: do not "improve" these ----
+  optimizer: "adam"
+  lr: 0.0001
+  batch_size: 128
+  max_epochs: 500                 # ceiling only; patience binds first
+  weight_decay: 0.0
+  scheduler: "none"
+  grad_clip_norm: 0.0
+  # ---- early stopping & model selection ----
+  monitor: "macro_f1"             # ERP-Benchmark selects on "best F1 Score"
+  monitor_mode: "max"
+  early_stopping_patience: 25
+  # ---- shared across all 17 entries so the table is comparable ----
+  normalization: "per_sample_zscore"   # per-trial, fit-free: no statistic crosses the split
+  num_workers: 2
+  amp: false
+  device: "cuda"
+  seeds: [0]                      # training seed, fixed; the sweep is over split_seeds
+  # ---- per-epoch train/val/test curves (monitoring only) ----
+  curves: true
+  train_eval_max_trials: 2000
+  # Gradient accumulation keeps the recipe's effective batch 128 for the ~67M DualCD
+  # variants, which OOM'd at batch 64 on 24 GB. Do NOT silently drop batch_size instead.
+  micro_batch_per_model:
+    dualcd_s4_flatten: 32
+    dualcd_transformer: 16
+    dualcd_s4_timepatch: 32
+
+# Structural hyperparameters live in code/configs/models/<name>.yaml. Leave this empty:
+# every entry here becomes a second source of truth and an override that must be justified.
+model_params: {}
+
+eval:
+  metrics: ["accuracy", "macro_f1", "auc", "balanced_accuracy", "cohen_kappa"]
+  calibration_metrics: ["nll", "brier", "ece"]
+  report_scope: "per_test_subject"
+
+checkpoints:
+  keep: ["best", "last"]
+  resume: true
+
+output:
+  output_dir: "outputs/experiments/wbci_shu/wbci_2c_cross_subject_bench_v1"
+  checkpoint_dir: "checkpoints/wbci_shu/wbci_2c_cross_subject_bench_v1"

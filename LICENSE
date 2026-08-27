@@ -1,0 +1,73 @@
+MIT License
+
+Copyright (c) 2026 the eeg-mi-online authors
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+================================================================================
+THIRD-PARTY CODE
+================================================================================
+
+This repository vendors and ports published baseline models. Each retains its
+original authors' license, kept alongside the vendored source. The MIT terms
+above apply to this project's own code, NOT to these components.
+
+1. ATCNet — Altaheri et al. 2023
+   Upstream: https://github.com/Altaheri/EEG-ATCNet  (Apache License 2.0)
+   Vendored: code/models/atcnet/_official_keras/  (incl. its LICENSE)
+   Port:     code/models/atcnet/atcnet_torch.py   (Keras -> PyTorch, 1:1)
+   Derived:  code/models/atcnet/atcnet_s4.py      (reuses the conv block)
+
+2. EEGNet — Lawhern et al. 2018
+   Upstream: https://github.com/vlawhern/arl-eegmodels
+   Vendored: code/models/paper_baselines/_official/EEGModels_arl_keras.py
+             + LICENSE_arl-eegmodels.txt
+   Port:     code/models/paper_baselines/eegnet_official_torch.py
+
+3. EEGNeX — Chen et al. 2024
+   Upstream: https://github.com/chenxiachan/EEGNeX
+   Vendored: code/models/paper_baselines/_official/BenchmarkModels_eegnex_keras.py
+             + LICENSE_EEGNeX.md
+   Port:     code/models/paper_baselines/eegnex_official_torch.py
+
+4. EEG-Deformer — Ding et al. 2024
+   Upstream: https://github.com/yi-ding-cs/EEG-Deformer
+   Vendored: code/models/paper_baselines/_official/EEGDeformer.py
+   Run unmodified (no port).
+
+5. S4 / DINO-DualCD family
+   Adapted from an advisor-supplied package whose own lineage is the ERP-Benchmark
+   codebase (arXiv:2601.00573). Deviations are recorded in
+   code/models/eeg_foundation/README.md. Note that the state-space layer is a
+   DIAGONAL SSM, not the DPLR construction of Gu et al. (ICLR 2022) — see
+   docs/PLAN_cross_subject_benchmark_and_fusion.md §5.5.
+
+================================================================================
+DATA
+================================================================================
+
+No EEG data is distributed with this repository. Both datasets are third-party
+and must be obtained from their sources under their own terms:
+
+* WBCIC-SHU (2C and 3C) — Yang et al., Scientific Data 12:488 (2025),
+  doi:10.1038/s41597-025-04826-y; data at doi:10.25452/figshare.plus.22671172
+  (CC-BY-4.0).
+* SHU 2022 — Ma et al.; per-session .mat files as released by the authors.
+
+Paths to local copies live in gitignored `code/configs/paths.local.yaml`.

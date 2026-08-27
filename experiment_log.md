@@ -10,6 +10,11 @@ status: "active"
 
 # Experiment Log
 
+> [!NOTE]
+> 本文件最后一条是 2026-08-04，其"实验未跑"的记录对当天而言正确，但此后已完成四批
+> WBCIC-SHU 三分类跨被试实验（08-07 ~ 08-24）。结果不在本文件里，见
+> [`docs/RESULTS_TRUTH.md`](docs/RESULTS_TRUTH.md)；逐日流水见根目录 `progress.md`。
+
 ## 2026-08-04 -- 端到端基础模型 × 跨被试：融合完成，**实验未跑（无任何结果数字）**
 
 学长换轨：不做在线学习，改用其交付的 5 个模型（S4ERP + UnifiedDINODualCD_{S4_Pos,S4_Timepatch,

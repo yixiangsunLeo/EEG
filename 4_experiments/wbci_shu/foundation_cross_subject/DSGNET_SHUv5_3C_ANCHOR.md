@@ -10,6 +10,13 @@ status: "active"
 
 # DSGNet × WBCIC-SHU 三分类对标锚点
 
+> [!NOTE]
+> 本文档的数字经 2026-08-25 复核**依然成立**，是 `val_mode=sessions` 那两批实验的唯一记录来源。
+> 但 `foundation_3c_loso_paper_v1` 与 `atcnet_3c_loso_paper_recipe_v1` 的
+> outputs / checkpoints / SLURM 日志**均已从磁盘删除**，无法再做配对统计检验，要用需重跑。
+> 全仓库统一结果表见 [`docs/RESULTS_TRUTH.md`](../../../docs/RESULTS_TRUTH.md)，
+> 那里把本文档的 sessions 数字与 `val_mode=subjects` 的两批合成了 2×2 因子分解。
+
 > 论文：Lou et al., *Subject-Independent Deep Learning Framework for Motor Imagery
 > Electroencephalogram Decoding in Neurorehabilitation*, IEEE JBHI 2026.
 > DOI: [10.1109/jbhi.2026.3689121](https://doi.org/10.1109/jbhi.2026.3689121)

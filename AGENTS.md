@@ -8,7 +8,9 @@
 | 类型 | 文件 | 作用 |
 |:---|:---|:---|
 | 灵魂记忆 | `AGENTS.md` | 本文件，唯一权威项目记忆与执行准则。 |
-| 当前主线路线 | `FOUNDATION_E2E_ROUTE_PLAN.md` | 端到端基础模型 × 跨被试（2026-08-04 起的主线）：融合成果、运行方式、checkpoint/续跑契约、协议待确认项。 |
+| **当前主线计划（2026-08-27 起）** | **`docs/PLAN_cross_subject_benchmark_and_fusion.md`** | **跨被试 benchmark + ATCNet×S4ERP 融合**：27 条锁定决定、两数据集 6:2:2 协议、17 个模型条目、配方、算力、P0–P4 步骤、全实验清单审计。**取代 `FOUNDATION_E2E_ROUTE_PLAN.md` 成为当前权威路线。** |
+| 复现指南 | `REPRODUCE.md` | 环境 / 数据核验 / smoke 验收脚本 / 全量提交 / 统计口径 / 确定性说明。 |
+| 上一条主线路线 | `FOUNDATION_E2E_ROUTE_PLAN.md` | 端到端基础模型 × 跨被试（2026-08-04）：仍可参考 checkpoint/续跑契约；协议部分已被上面的计划取代。 |
 | 进度日记 | `progress.md` | PROGRESS 角色，逐条追加运行记忆，最新在上。 |
 | 架构+结构 | `0_docs/ARCHITECTURE.md` | 目录结构、代码分层、每个文件作用。 |
 | 状态+就绪 | `0_docs/STATUS.md` | 进度、能否跑、SHU 就绪、下一步、清理策略。 |
@@ -169,6 +171,39 @@ E2E: 端到端基础模型 × 跨被试（当前主线）
   · 提交：`bash scripts/slurm/submit_shu2022.sh`（7 模型分 3 组 → 3 卡，实验二用 `afterany`
     挂在实验一后）。gpu2node 满时按 `scontrol update jobid=<id> partition=gpu3node` 搬。
   · 协议依据见 `inbox/cross_subject_protocol_research.md` §2.3（2026-08-16 已对 PMC 原文逐句核过）。
+- **跨被试 benchmark + ATCNet×S4ERP 融合（2026-08-27 起的当前主线，P0 完成、未跑 GPU）**：
+  权威计划 `docs/PLAN_cross_subject_benchmark_and_fusion.md`；复现 `REPRODUCE.md`；
+  逐条记录见 `progress.md` 2026-08-27 条目。硬事实：
+  - **域对抗结案，不要再提**：S4ERP-Adv 论文配方 **+0.28pp**（我们配方 +2.92pp，即通用正则）、
+    ATCNet-Adv **−4.22pp**（11 折全）、λ 0.1→2.0 差异 0.56pp。`s4erp_adv`/`atcnet_adv`/
+    `dualcd_s4_pos`/`eegnet`(自研)/`cap_eegnet` 全部**弃用但保留代码**
+    （`registry.DEPRECATED_MODELS`、`adapter.DEPRECATED_VARIANTS`，构建时 WARNING）——
+    删代码会让 `RESULTS_TRUTH` 引用的数字不可复现。
+  - **难被试是"没信号"不是"迁移失败"**：`wbci_3c_within_ceiling_v1` 实测 sub-011 被试内
+    仅 34.7%/37.6%（chance 33.3%）。⚠ 但该实验**数据饥饿**（每 cell 仅 192 训练 trial），
+    4 个被试的跨被试成绩反超它，**不能当可解码性上界引用**。
+  - **数据集**：本轮用 **WBCIC-SHU 2C（51 被试，从未做过跨被试，完美类别平衡）** + SHU 2022；
+    **3C 本轮不用**。**2C 与 3C 是互斥队列**（subjects 1–51 vs 52–62，Yang et al. Sci Data
+    12:488 2025 + MOABB `Yang2025`），**不是子集**；Figshare 写的 "52 subjects" 是错的，以 51 为准。
+  - **seeds 41–45 出处 = ERP-Benchmark（arXiv:2601.00573）**，原文即用于被试划分；
+    该文同时是指标口径（Acc/F1/AUROC）、6:2:2 划分比、以及**学长 S4/DINO 包**的源头。
+  - 协议：两数据集均 `kfold_subject` / 5 折 / **6:2:2** / `split_seeds:[41,42]` /
+    `train.seeds:[0]`；配方 Adam 1e-4 / batch 128 / 无 scheduler / max 500 /
+    **patience 25** / `monitor: macro_f1`。**17 个条目一次提交**（约 452 GPU-h ≈ 4.7 天/4 卡）。
+  - 新增能力：**模型别名 `name@variant`**（`code/models/model_specs.py`，参数单一来源
+    `defaults`/`per_dataset`/`variants`）；**`cell_signature` v2**（`_stopping_identity`：
+    patience 总是进签名，`max_epochs` 仅在 scheduler 非 none 时进）；每 cell 写
+    **`predictions.npz`**（per-trial）；Cohen's Kappa；`failures.json` + 环境指纹；
+    `scripts/slurm/submit_bench.sh`（4 卡分组 + **48h 自动重投链**）；
+    `code/summaries/cross_subject_bench.py`（配对 Wilcoxon+Holm / Cohen's d_z /
+    Friedman+Nemenyi CD 图 / **按 val 选变体** / 跨数据集主表）。
+  - **两个融合方向**（实测 58ch/2 类）：`s4erp_dw@{f64d2,f16d8,f16d2p}` = 学长指定的
+    "空间滤波用 ATCNet 的"，dense 950,400 → depthwise 25,984/24,736/6,592，全模型
+    1,370,882 → 426,370/425,122/406,978；`atcnet_s4` = 共享因果 SSM 替 5 个 TCN，
+    114,554 → **23,482**（小 4.88 倍），`readout_idx=[12..16]`，
+    **`log_dt` 必须按 Tc 重初始化**（默认 6.8–546 步会退化成滑动平均）。两者**互补**。
+  - ⚠ **`s4erp` 的 "S4" 名不符实**：`s4_layers.py` 只用 `diag(A)`，是对角 SSM（S4D 类），
+    **不能引用 Gu et al. 2022 作为实现依据**；真 DPLR 对比延后到 P4。
 - Future work: prototype memory, online test-then-update, full CAP-EEGNet,
  集成真实 EEG 基础模型 (CBraMod/REVE/TFM-Tokenizer) 跑 TTA。
 

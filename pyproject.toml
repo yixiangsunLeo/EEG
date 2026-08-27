@@ -1,0 +1,53 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "eeg-mi-online"
+version = "0.1.0"
+description = "Cross-subject motor-imagery EEG decoding: benchmark and ATCNet x S4ERP fusion"
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.10"
+# Runtime pins live in requirements.txt / environment.yml, because torch has to come from
+# PyTorch's own cu118 index and that cannot be expressed here.
+dependencies = []
+
+[project.urls]
+Repository = "https://github.com/CHANGE/ME"
+
+# The package directory is `code/`, which is also a stdlib module name. Imports in this
+# project are always `from code.<...> import ...` executed from the repository root, so the
+# directory is deliberately NOT installed as a top-level distribution package; installing
+# this project is only useful for the dev tooling below.
+[tool.setuptools]
+packages = []
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = "-q --strict-markers"
+markers = [
+    "slow: needs a GPU or more than a few seconds",
+]
+
+[tool.ruff]
+line-length = 95
+target-version = "py310"
+extend-exclude = [
+    # Vendored upstream sources are reference material, kept byte-for-byte.
+    "code/models/atcnet/_official_keras",
+    "code/models/paper_baselines/_official",
+    "backup",
+]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B"]
+ignore = [
+    "E501",    # line length is handled by the formatter setting above
+    "B905",    # zip(strict=) — not always desirable here
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Model ports intentionally mirror upstream naming (F1, D, eegn_*), which is not snake_case.
+"code/models/**" = ["N803", "N806"]

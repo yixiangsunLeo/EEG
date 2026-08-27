@@ -83,7 +83,11 @@ def load_session_tensors(npz_path: str | Path) -> Tuple[torch.Tensor, torch.Tens
 
 
 def evaluate_predictions(y_true: np.ndarray, y_pred: np.ndarray, probs: np.ndarray) -> Dict[str, float]:
-    """Accuracy / Balanced Accuracy / Macro-F1 / AUC / NLL / Brier / ECE.
+    """Accuracy / Balanced Accuracy / Macro-F1 / Cohen's Kappa / AUC / NLL / Brier / ECE.
+
+    The first three plus AUC are the ERP-Benchmark (arXiv:2601.00573) reporting set
+    (Accuracy / F1 / AUROC); Kappa matches the DSGNet Table II column set; NLL / Brier / ECE
+    are calibration.
 
     AUC: binary uses P(class=1); multiclass (C>=3) uses macro-OVR.
     """

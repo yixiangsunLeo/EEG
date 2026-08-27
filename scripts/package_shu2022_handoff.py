@@ -35,6 +35,8 @@ MODELS = [
     "deepconvnet",
     "fbcnet",
     "s4erp",
+    "dualcd_s4_flatten",
+    "dualcd_transformer",
 ]
 MODEL_LABEL = {
     "eegnet_official": "EEGNet",
@@ -44,6 +46,8 @@ MODEL_LABEL = {
     "deepconvnet": "DeepConvNet",
     "fbcnet": "FBCNet",
     "s4erp": "S4ERP",
+    "dualcd_s4_flatten": "DualCD-S4-Flatten",
+    "dualcd_transformer": "DualCD-Transformer",
 }
 METRICS = ["accuracy", "balanced_accuracy", "macro_f1", "auc", "nll", "brier", "ece"]
 CHANCE = 0.50

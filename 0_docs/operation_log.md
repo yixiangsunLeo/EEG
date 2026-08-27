@@ -3,7 +3,7 @@ title: "Operation Log"
 tags:
   - "#modality/eeg"
 created: "2026-06-10"
-updated: "2026-08-20"
+updated: "2026-08-27"
 status: "active"
 ---
 
@@ -11,6 +11,30 @@ status: "active"
 
 | Time | Action | Path | Note |
 |:---|:---|:---|:---|
+| 2026-08-27 | CREATE | `docs/PLAN_cross_subject_benchmark_and_fusion.md` | 本轮权威计划（27 条锁定决定 / 两数据集 6:2:2 协议 / 17 个模型条目 / P0–P4）。 |
+| 2026-08-27 | CREATE | `code/models/model_specs.py` | 模型参数单一来源 + 别名机制 `name@variant`；`safe_tag` 供路径使用。 |
+| 2026-08-27 | CREATE | `code/models/atcnet/atcnet_s4.py` | 融合方向 B：ATCNet 卷积块 + 共享因果 SSM 替 5 个 TCN；`reinit_log_dt_for_length` + 因果掩码 MHA。`atcnet_torch.py` 未动。 |
+| 2026-08-27 | CREATE | `code/summaries/cross_subject_bench.py` | 配对 Wilcoxon + Holm / Cohen's d_z / Friedman + Nemenyi CD / 按 val 选变体 / 跨数据集主表。 |
+| 2026-08-27 | CREATE | `code/configs/models/{s4erp_dw,atcnet_s4}.yaml` | 两个融合模型的超参与变体定义。 |
+| 2026-08-27 | CREATE | `code/configs/experiments/{wbci_2c,shu}_cross_subject_bench.yaml` | 两个 benchmark run（17 条目 × 5 折 × split 41/42），`model_params` 刻意留空。 |
+| 2026-08-27 | CREATE | `scripts/slurm/{bench_gpu.sbatch,submit_bench.sh}` | 4 卡分组 + 48h 自动重投链 + sacct 快照 + 末尾 summarize。 |
+| 2026-08-27 | CREATE | `tests/models/test_fusion_and_specs.py` + `tests/models/__init__.py` | 41 个测试（别名 / 参数解析 / 融合模型参数量与因果性 / 签名守卫 / 统计）。 |
+| 2026-08-27 | CREATE | `LICENSE`, `requirements.txt`, `environment.yml`, `pyproject.toml`, `REPRODUCE.md` | 公开准备（决定 14）。 |
+| 2026-08-27 | REWRITE | `scripts/summarize_cross_subject.py` | 旧版硬编码 `--seed 0` 且只出 mean±std；新版多 split_seed 聚合 + 统计 + CD 图 + 跨数据集主表。 |
+| 2026-08-27 | UPDATE | `code/experiments/cross_subject_protocols.py` | `cell_signature` v2（`_stopping_identity`：patience 总是进签名，`max_epochs` 仅在有 scheduler 时进）；`split_seed` 进 result.json 与结果行；写 `predictions.npz`；Kappa 进结果列；cell 目录名走 `safe_tag`。 |
+| 2026-08-27 | UPDATE | `code/experiments/cross_session_e2e_protocols.py` | 同步签名 v2 与版本守卫。 |
+| 2026-08-27 | UPDATE | `code/models/eeg_foundation/{encoders,models,adapter}.py` | 新增 `DepthwiseShallowNetEmbedding` / `S4ERPDW` / `s4erp_dw` 注册（融合方向 A）；**删除 `S4ERP` 上多余的 `update_adv_lambda`**（既存 bug）；`hasattr` 鸭子类型改为显式 `_ADVERSARIAL_VARIANTS`；DualCD 分支遇对抗参数改为报错。 |
+| 2026-08-27 | UPDATE | `code/models/atcnet/adapter.py` | 新增 `ATCNetS4Config` / `ATCNetS4Classifier`。 |
+| 2026-08-27 | UPDATE | `code/models/registry.py` | 别名解析；`BENCHMARK_MODEL_NAMES`（17 条目）；`DEPRECATED_MODELS`（保留实现、构建时警告，不删除）；注册 `atcnet_s4`。 |
+| 2026-08-27 | UPDATE | `code/models/{deepconvnet,fbcnet}.py` | 补 `describe()` + `default_lr()`（此前 `n_params` 记为 0）。 |
+| 2026-08-27 | UPDATE | `code/experiments/metrics.py`, `code/experiments/session_protocols.py` | 加 Cohen's Kappa。 |
+| 2026-08-27 | UPDATE | `code/runners.py` | 调 `resolve_all` 并写 `resolved_model_params.json`；新增 `_environment_fingerprint()`；失败 cell 落盘 `failures.json`。 |
+| 2026-08-27 | UPDATE | `code/configs/models/atcnet.yaml` | 改为 `defaults` + `per_dataset` + `variants`（`tcn8`/`nwin1`/`noattn`）。 |
+| 2026-08-27 | UPDATE | `tests/foundation/test_eeg_foundation_contract.py` | 契约只对"仍维护的变体"断言；新增两个测试记录 `s4erp_adv` 的契约偏离与 `S4ERP` 的对抗方法回归。 |
+| 2026-08-21 | CREATE | `scripts/slurm/submit_shu_cross_subject_dualcd.sh` | 实验二 DualCD Flatten+Transformer：隔离 smoke 后 afterok 全量。 |
+| 2026-08-21 | UPDATE | `code/configs/experiments/shu_cross_subject_5fold.yaml` | 加入 dualcd_s4_flatten / dualcd_transformer 与 micro_batch；run_id 不变。 |
+| 2026-08-21 | UPDATE | `scripts/plot_training_diagnostics.py` | DualCD 进模型列表；权重直方图排除 teacher EMA。 |
+| 2026-08-21 | CREATE | `scripts/plot_training_diagnostics.py` + `outputs/experiments/shu/training_viz_v1/` | 两套实验的 acc/loss 曲线 + `best.pt` 参数分布（训练时未记权重轨迹）。 |
 | 2026-08-20 | CREATE | `/share/home/yuan/SYX/SHU2022_两次实验结果_交给学长_20260820/` | 两套 SHU 2022 实验的交接包：原始 `result.json`、表、374 张图、中文解读；不含 2.4 GB 权重。 |
 | 2026-08-20 | CREATE | `scripts/package_shu2022_handoff.py` | 复制产物、汇总 CSV、画总览图 + 三曲线。 |
 | 2026-08-16 | CREATE | `code/experiments/cross_session_e2e_protocols.py` | SHU 2022 被试内跨 session 协议（每被试一模型，train/test session 列表可配），走 `e2e_trainer` 拿断点续跑 + 三曲线。 |

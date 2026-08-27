@@ -1,0 +1,103 @@
+experiment:
+  name: "foundation_cross_subject"
+  source_config: "configs/experiments/shu_cross_subject_bench.yaml"
+
+# =====================================================================
+# SHU 2022 (25 subjects) — CROSS-SUBJECT BENCHMARK + ATCNet x S4ERP FUSION.
+# Second dataset of the same table as wbci_2c_cross_subject_bench.yaml. Identical models,
+# identical recipe, identical 6:2:2 subject ratio — only the data differs (32ch, 11,988
+# trials, 5 sessions per subject, mild class imbalance 5983:6005).
+# Plan: docs/PLAN_cross_subject_benchmark_and_fusion.md
+#
+# SPLIT — 6:2:2 by SUBJECT, exactly:
+#   25 subjects -> 5 folds of 5 test subjects; of the 20 non-test, 5 are validation.
+#   15 train : 5 val : 5 test = precisely 6:2:2 (ERP-Benchmark's ratio, arXiv:2601.00573).
+#
+# WHY A NEW run_id INSTEAD OF EXTENDING shu_cross_subject_5fold_v1
+#   The old run used `n_val_subjects: 4` (16:4:5) and `monitor: accuracy`. Both are part of
+#   `cell_signature`, so its 225 completed cells cannot be reused under this protocol — the
+#   resume guard would (correctly) refuse. The old run is kept read-only as a historical
+#   comparison (AGENTS.md §4). Cost of re-running: ~82 GPU-h.
+#
+# CLASS IMBALANCE: 67 of 125 sessions are not 50/50, so `balanced_accuracy` must be read
+#   alongside `accuracy` for this dataset. WBCIC-2C is perfectly balanced; SHU is not.
+#
+# FLOOR EFFECT: the dataset authors' own cross-session accuracy is 53.7%, not significantly
+#   above chance (p>0.05), and our Phase 1 cross-session EEGNet was 0.538. Cross-subject
+#   numbers in the 55-65% band are the EXPECTATION here, not a bug. Differences of 1-2pp
+#   near the floor are noise.
+#
+# Run (GPU / Slurm; never on the login node):
+#   python code/run.py --dry-run --config code/configs/experiments/shu_cross_subject_bench.yaml
+#   bash scripts/slurm/submit_bench.sh shu
+# =====================================================================
+
+run_id: "shu_cross_subject_bench_v1"
+
+data:
+  name: "shu"
+  manifest: "shu_processed_manifest"
+  status_filter: ["ok"]
+  n_channels: 32
+  n_times: 1000                  # 4 s trial @ 250 Hz (author-provided epochs)
+  n_classes: 2
+  sfreq: 250
+
+models: [
+  # ---- group 1: benchmark baselines ----
+  "eegnet_official", "eegnex", "eeg_deformer", "atcnet",
+  "deepconvnet", "fbcnet",
+  "s4erp", "dualcd_s4_flatten", "dualcd_transformer", "dualcd_s4_timepatch",
+  # ---- group 2: fusion direction A (advisor-specified main line) ----
+  "s4erp_dw@f64d2", "s4erp_dw@f16d8", "s4erp_dw@f16d2p",
+  # ---- group 3: fusion direction B ----
+  "atcnet_s4",
+  # ---- group 4: ATCNet explanatory ablations ----
+  "atcnet@tcn8", "atcnet@nwin1", "atcnet@noattn",
+]
+
+cross_subject:
+  protocol: "kfold_subject"
+  n_folds: 5                     # 25 subjects -> 5 test subjects per fold
+  val_mode: "subjects"
+  n_val_subjects: 5              # 15 : 5 : 5 = exactly 6:2:2
+  split_seeds: [41, 42]
+
+train:
+  # ---- identical to wbci_2c_cross_subject_bench.yaml; the two datasets share one table ----
+  optimizer: "adam"
+  lr: 0.0001
+  batch_size: 128
+  max_epochs: 500                 # ceiling only; patience binds first
+  weight_decay: 0.0
+  scheduler: "none"
+  grad_clip_norm: 0.0
+  monitor: "macro_f1"
+  monitor_mode: "max"
+  early_stopping_patience: 25
+  normalization: "per_sample_zscore"
+  num_workers: 2
+  amp: false
+  device: "cuda"
+  seeds: [0]
+  curves: true
+  train_eval_max_trials: 2000
+  micro_batch_per_model:
+    dualcd_s4_flatten: 32
+    dualcd_transformer: 16
+    dualcd_s4_timepatch: 32
+
+model_params: {}
+
+eval:
+  metrics: ["accuracy", "macro_f1", "auc", "balanced_accuracy", "cohen_kappa"]
+  calibration_metrics: ["nll", "brier", "ece"]
+  report_scope: "per_test_subject"
+
+checkpoints:
+  keep: ["best", "last"]
+  resume: true
+
+output:
+  output_dir: "outputs/experiments/shu/shu_cross_subject_bench_v1"
+  checkpoint_dir: "checkpoints/shu/shu_cross_subject_bench_v1"

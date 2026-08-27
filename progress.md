@@ -7,6 +7,113 @@ Format per entry: date, what was done, decisions made, open questions, next step
 
 ---
 
+## 2026-08-27 — 新主线：跨被试 benchmark + ATCNet×S4ERP 融合。**P0 工程阶段完成**
+
+权威计划 = `docs/PLAN_cross_subject_benchmark_and_fusion.md`（27 条锁定决定）。
+**没有跑任何 GPU 实验。** 代码就绪，`pytest tests/ -q` → **134 passed**。
+
+### 三个"进行中"实验其实早就跑完了，结论是关掉域对抗
+
+| 实验 | 结果 | 含义 |
+|:---|:---|:---|
+| `adv_821recipe_3c_v1`（11/11） | S4ERP-Adv 论文配方 **68.54%** vs S4ERP 68.26% = **+0.28pp**（我们配方下是 +2.92pp） | 对抗项是**通用正则**，换成隐式正则更强的配方后失效 |
+| `atcnet_adv_3class_v1`（22/22） | ATCNet 70.85% → **66.63%** = **−4.22pp** | 强骨干上是净损失 |
+| λ 扫描 | 0.1→2.0 落在 0.56pp 内，远小于折间 13–15pp | 若真是不变性学习，强度不可能不敏感 |
+| `wbci_3c_within_ceiling_v1`（165×2） | sub-011 被试内也只有 34.7%/37.6%（chance 33.3%）；**但 4 个被试的跨被试成绩反超被试内**（sub-008 高 17.5pp），因为被试内每 cell 只有 192 训练 trial | 难被试是"没信号"不是"迁移失败"；同时这个"天花板"是数据饥饿的，不是真上界 |
+
+→ **域对抗线正式结案**，`s4erp_adv` / `atcnet_adv` 退出实验（代码保留，见下）。
+
+### 数据事实（查证 + 实测）
+
+- **2C 与 3C 是互斥队列，不是子集**：2C = subjects 1–51，3C = subjects 52–62
+  （Yang et al., *Sci Data* 12:488 (2025) + MOABB `Yang2025`）。加上 SHU 25 人 = **3 个独立队列**。
+  Figshare 描述写 "52 subjects" 与论文和我们 manifest 的 51 矛盾，**以 51 为准**。
+- **WBCIC-2C 从未做过跨被试**：51 被试 / 148 ok session / 29,600 trial / 58×1000@250Hz /
+  **完美类别平衡 14800:14800**。这是唯一让模型比较有统计意义的队列
+  （11 被试下可检出差异约 9pp > 模型总极差 6.2pp，即任意两模型不可区分）。
+- **seeds 41–45 的出处查到了**：ERP-Benchmark（arXiv:2601.00573），原文用它做
+  *"random subject partitioning across different seeds"* —— 就是被试划分 seed。
+  该文同时是指标口径（Acc/F1/AUROC）、6:2:2 划分比、以及**学长整个 S4/DINO 包**的源头。
+
+### 已锁定协议
+
+两个数据集、都是 `kfold_subject`、都 6:2:2、`split_seeds: [41,42]`、`train.seeds: [0]`：
+WBCIC-2C 5 折（30/31 : 10 : 10/11）+ SHU 5 折（15:5:5 精确）。
+配方 = 已跑过那套（Adam 1e-4 / batch 128 / 无 scheduler / max 500 / **patience 25** /
+`monitor: macro_f1`）。**17 个条目一次提交**（原计划分阶段已推翻，见计划 §0 决定 25），
+约 **452 GPU-h ≈ 4.7 天**（4 卡）。
+
+### 两个融合方向都实现了（实测参数量，58ch/2 类）
+
+- **方向 A（学长指定："空间滤波使用 ATCNet 的"）= `s4erp_dw`**：把 S4ERP 的 dense 空间卷积
+  （**950,400** 参数，占全模型 71%）换成 ATCNet 式 depthwise。三个 F1/D 变体
+  `@f64d2` / `@f16d8` / `@f16d2p` → 全模型 **426,370 / 425,122 / 406,978**（对照 1,370,882）。
+  **只改 depthwise 一处**，`max_norm` 和时域核长都不动，否则不是单变量对照。
+  顺带测出**通道缩放差 128 倍**：32ch→58ch 时 dense 增 **425,984** 参数、depthwise 只增 **3,328**。
+- **方向 B = `atcnet_s4`**：一个共享因果 SSM 替 5 个独立 TCN（83,840 参数 = ATCNet 的 73.1%）。
+  实测 **23,482**（比 ATCNet 的 114,554 小 **4.88 倍**），`readout_idx = [12,13,14,15,16]`
+  正是官方 5 个窗口的末步，SSM 时间常数 **[0.27, 16.89] tokens**（Tc=17）——
+  `log_dt` 重初始化生效（默认会是 6.8–546，7/8 个模式退化成滑动平均）。
+- 两者**互补不替代**：A 修空间前端（71%），修完后最大块变成 187k/125k 的 flatten 分类头，
+  那是 B 处理的。
+
+### P0 期间发现并修掉的三个既存 bug
+
+1. **`cell_signature` 不含早停设定** → 改 patience 不报错、静默复用旧 cell。
+   修法比原计划更精确（`_stopping_identity`）：**patience 总是进签名**；
+   **`max_epochs` 仅在 scheduler 非 none 时进** —— 在 `scheduler: none` 下它是纯上限，
+   "提高上限后续跑"是同一轨迹的严格延长（正是墙钟被砍后重投的做法）。签名版本 v2 + 版本守卫。
+2. **`S4ERP` 上有多余的 `update_adv_lambda`**（引用只有 `S4ERPAdversarial` 才有的 `self.grl`），
+   而 adapter 用 `hasattr` 鸭子类型判断 → **plain `s4erp` 调 `training_step` 直接 AttributeError**。
+   潜伏原因是 `uses_custom_loss=False`，训练器从不走那条路。已删方法 + 改成显式集合判断。
+3. **`deepconvnet`/`fbcnet` 缺 `describe()`** → `n_params` 记成 0（旧 SHU 表里可见）。
+   已补，实测 302,552 / 20,711。
+
+### 一处刻意偏离计划
+
+P0-1 原文是"**删**"5 个模型（`eegnet`/`cap_eegnet`/`s4erp_adv`/`atcnet_adv`/`dualcd_s4_pos`），
+实施改成**弃用但保留**：它们都产出过 `RESULTS_TRUTH` 里引用的数字，删代码会让那些数字
+不可复现（且 `eegnet`/`cap_eegnet` 被 Phase 0–2c 的 config 引用，AGENTS 要求那些可复现）。
+用 `BENCHMARK_MODEL_NAMES` 白名单 + 构建时弃用警告达到同样效果。
+
+### 开放问题
+
+1. **尚未 git commit。** 工作区在 P0 之前就有 18 个 modified + untracked，最后 commit 是
+   `bf49e24`；P0 改动叠加其上。建议 P1 之前提交，**需要用户授权**。
+2. **U1 源被试筛选 / U2 Euclidean Alignment arm** 仍未分配（都不是域对抗方法，未被决定 4 覆盖），
+   要做就得在 P2 排产前定，因为都会改变实验网格。
+3. §7 的组 2/3/4 单 cell 成本仍是**估算**，P1 smoke 实测后替换；差 >50% 要先重算预算。
+
+### 下一步
+
+**P1 smoke**（1 卡约 3 小时，9 个条目 × fold 0 × 5 epoch），验收清单与检查脚本见
+`REPRODUCE.md` §4；三条硬门：参数量全非 0、`timepatch` 分箱覆盖 6 个箱、
+`atcnet_s4` 时间常数在 1–17 tokens。通过后再 `submit_bench.sh`。
+
+---
+
+## 2026-08-21 — 实验二补跑 DualCD Flatten + Transformer（smoke → 全量）
+
+- 学长确认：只补这两个，**配方完全跟实验二**（Adam 1e-4 / 有效 batch 128 / patience 25 /
+  monitor accuracy / 16:4:5 / split_seeds 41–45 / 三曲线 / resume）。
+- YAML `shu_cross_subject_5fold.yaml` 增加两模型 + `micro_batch_per_model`
+ （flatten 32 / transformer 16，与 821 相同）。`run_id` 仍是 `shu_cross_subject_5fold_v1`，
+  已完成的 175 个监督 cell 会被跳过。
+- 提交：`scripts/slurm/submit_shu_cross_subject_dualcd.sh`。先隔离目录 smoke（2 epoch、
+  split41 fold0），`afterok` 后再两卡全量（各 25 cell）。
+- 可视化脚本已把 DualCD 加进 `plot_training_diagnostics.py` / `package_shu2022_handoff.py`；
+  三曲线脚本按 cell 名发现模型，不用改。跑完后重跑 diagnostics 即可对齐 acc/loss/权重直方图。
+
+---
+
+## 2026-08-21 — 补训练可视化：acc / loss / best.pt 参数分布
+
+- 两套 SHU 2022 实验训练时只把曲线写进 `result.json`，**没有** TensorBoard，也**没有**逐 epoch 记权重。
+- 现事后画出：`outputs/experiments/shu/training_viz_v1/`（acc+loss 均值图、单 cell 例子、`best.pt` 全体权重直方图 + 按模块 RMS）。
+- 脚本：`scripts/plot_training_diagnostics.py`。权重直方图是 checkpoint 快照，不是训练过程动画。
+
+---
+
 ## 2026-08-20 — SHU 2022 两实验交接包（给学长）
 
 - 两套实验均 175/175 完成。交接目录：

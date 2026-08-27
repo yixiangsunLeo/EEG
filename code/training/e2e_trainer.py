@@ -184,7 +184,10 @@ def _default_eval(model: nn.Module, loader: DataLoader, device: torch.device) ->
     losses, n = 0.0, 0
     preds: List[np.ndarray] = []
     trues: List[np.ndarray] = []
-    for xb, yb in loader:
+    for batch in loader:
+        # The train-eval monitoring loader is a subset of the train set, which for
+        # adversarial variants yields (X, y, subject_id); take the first two positionally.
+        xb, yb = batch[0], batch[1]
         xb = xb.to(device, non_blocking=True)
         yb_dev = yb.to(device, non_blocking=True)
         logits = model(xb)["logits"]

@@ -38,9 +38,19 @@ experiment:
 #   MONITORING ONLY: best.pt and early stopping read the val loader alone (guard in
 #   code/training/e2e_trainer.py).
 #
+# DualCD / DINO add-on (advisor 2026-08-21: Flatten + Transformer only; same recipe as
+#   the 7 supervised models so the numbers sit on the same table):
+#   dualcd_transformer     = DINO (Transformer backbone)
+#   dualcd_s4_flatten      = DINO + S4 (flatten pooling)
+#   Same run_id / output / checkpoint dirs: the finished 175 supervised cells are skipped
+#   via result.json; only the 50 DualCD cells are trained. Do NOT change train.* above
+#   or the 7 models' cell signatures will refuse to match.
+#   micro_batch_per_model keeps effective batch 128 (821: flatten 32 / transformer 16;
+#   those two OOM'd at batch 64 on 24 GB). DualCD also evaluates 6 DINO views per step.
+#
 # Run (GPU / Slurm; never on the login node):
 #   python code/run.py --dry-run --config code/configs/experiments/shu_cross_subject_5fold.yaml
-#   bash scripts/slurm/submit_shu_cross_subject.sh
+#   bash scripts/slurm/submit_shu_cross_subject_dualcd.sh
 # =====================================================================
 
 run_id: "shu_cross_subject_5fold_v1"
@@ -55,7 +65,8 @@ data:
   sfreq: 250
 
 models: ["eegnet_official", "eegnex", "eeg_deformer", "atcnet",
-         "deepconvnet", "fbcnet", "s4erp"]
+         "deepconvnet", "fbcnet", "s4erp",
+         "dualcd_s4_flatten", "dualcd_transformer"]
 
 cross_subject:
   protocol: "kfold_subject"      # 25 subjects -> 5 folds of 5 test subjects
@@ -86,6 +97,11 @@ train:
   # ---- per-epoch train/val/test curves (monitoring only) ----
   curves: true
   train_eval_max_trials: 2000     # capped train subset, eval mode, for a comparable curve
+  # DualCD ~66M: keep the recipe's effective batch 128 via gradient accumulation.
+  # Documented the same way as paper_baseline_3c_821.yaml. Do not drop batch_size.
+  micro_batch_per_model:
+    dualcd_s4_flatten: 32
+    dualcd_transformer: 16
 
 model_params:
   # ===== published baselines: upstream author defaults, NOT tuned =====
@@ -103,6 +119,14 @@ model_params:
            temporal_segments: 4, dropout: 0.5}
   # ===== ours =====
   s4erp: {d_model: 128, n_layers: 4, state_dim: 8, d_ff: 256, dropout: 0.1}
+  dualcd_s4_flatten: {d_model: 128, n_layers: 4, state_dim: 8, d_ff: 256, dropout: 0.1,
+                      lambda_intra: 0.5, dino_out_dim: 256, proto_k: 5,
+                      teacher_momentum: 0.996, warmup_epochs: 5,
+                      view_low_band: [8.0, 13.0], view_high_band: [13.0, 30.0]}
+  dualcd_transformer: {d_model: 128, n_layers: 6, n_heads: 8, d_ff: 256, dropout: 0.1,
+                       lambda_intra: 0.5, dino_out_dim: 256, proto_k: 5,
+                       teacher_momentum: 0.996, warmup_epochs: 5,
+                       view_low_band: [8.0, 13.0], view_high_band: [13.0, 30.0]}
 
 eval:
   metrics: ["accuracy", "balanced_accuracy", "macro_f1", "auc"]

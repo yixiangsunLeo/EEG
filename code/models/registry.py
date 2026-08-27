@@ -47,13 +47,15 @@ from typing import Dict, List, Optional
 import torch.nn as nn
 
 from ..utils.logging_utils import get_logger
-from .atcnet.adapter import ATCNetClassifier, ATCNetConfig
+from .atcnet.adapter import (ATCNetAdvConfig, ATCNetAdversarial, ATCNetClassifier,
+                             ATCNetConfig, ATCNetS4Classifier, ATCNetS4Config)
 from .cap_eegnet import CAPEEGNet, CAPEEGNetConfig
 from .deepconvnet import DeepConvNet, DeepConvNetConfig
 from .eeg_foundation.adapter import VARIANT_NAMES as FOUNDATION_MODEL_NAMES
 from .eeg_foundation.adapter import EEGFoundationConfig, build_eeg_foundation
 from .eegnet import EEGNetClassifier, EEGNetConfig
 from .fbcnet import FBCNet, FBCNetConfig
+from .model_specs import split_alias
 from .paper_baselines.adapter import BASELINE_NAMES as PAPER_BASELINE_NAMES
 from .paper_baselines.adapter import PaperBaselineConfig, build_paper_baseline
 
@@ -61,8 +63,49 @@ logger = get_logger("models.registry")
 
 BASELINE_MODEL_NAMES: List[str] = ["eegnet", "deepconvnet", "fbcnet", "cap_eegnet"]
 PUBLISHED_MODEL_NAMES: List[str] = ["atcnet"] + list(PAPER_BASELINE_NAMES)
+#: Ours, but built on a published backbone rather than the S4/DINO family.
+DERIVED_MODEL_NAMES: List[str] = ["atcnet_adv", "atcnet_s4"]
 MODEL_NAMES: List[str] = (BASELINE_MODEL_NAMES + list(FOUNDATION_MODEL_NAMES)
-                          + PUBLISHED_MODEL_NAMES)
+                          + PUBLISHED_MODEL_NAMES + DERIVED_MODEL_NAMES)
+
+#: The canonical cross-subject comparison roster (17 entries once aliases are expanded).
+#: Anything outside this list is either deprecated (see ``DEPRECATED_MODELS``) or a
+#: single-dataset historical baseline. Kept here so an experiment config cannot silently
+#: drift away from the documented benchmark.
+BENCHMARK_MODEL_NAMES: List[str] = [
+    # published baselines, official author code only
+    "eegnet_official", "eegnex", "eeg_deformer", "atcnet",
+    # classic baselines
+    "deepconvnet", "fbcnet",
+    # ours — S4 / DINO family
+    "s4erp", "dualcd_s4_flatten", "dualcd_transformer", "dualcd_s4_timepatch",
+    # ours — fusion direction A: S4ERP base + ATCNet depthwise spatial front-end
+    "s4erp_dw@f64d2", "s4erp_dw@f16d8", "s4erp_dw@f16d2p",
+    # ours — fusion direction B: ATCNet base + shared causal SSM
+    "atcnet_s4",
+    # ATCNet explanatory ablations
+    "atcnet@tcn8", "atcnet@nwin1", "atcnet@noattn",
+]
+
+#: Deprecated, but **not deleted**: each one produced numbers that are cited in
+#: ``docs/RESULTS_TRUTH.md``, and removing the code would make those numbers
+#: unreproducible. Building one logs a warning. Excluded from ``BENCHMARK_MODEL_NAMES``.
+DEPRECATED_MODELS: Dict[str, str] = {
+    "eegnet": (
+        "this project's own Phase 0-2c EEGNet, easily confused with the official one. "
+        "Use 'eegnet_official' (vlawhern/arl-eegmodels, ported 1:1)."
+    ),
+    "cap_eegnet": (
+        "our v1 model; never evaluated cross-subject and superseded by the fusion models. "
+        "Use 's4erp_dw@*' or 'atcnet_s4'."
+    ),
+    "atcnet_adv": (
+        "subject-adversarial arm is closed: -4.22pp vs plain ATCNet over 11 folds "
+        "(atcnet_adv_3class_v1). Use 'atcnet'."
+    ),
+    # s4erp_adv / dualcd_s4_pos carry their own reasons in eeg_foundation.adapter
+    # (DEPRECATED_VARIANTS) and warn from there.
+}
 
 
 def _select(cfg_cls, params: Dict) -> Dict:
@@ -84,10 +127,20 @@ def build_model(
     sfreq: int = 250,
     params: Optional[Dict] = None,
 ) -> nn.Module:
-    """Construct a model by name with shared data dims + per-model structural params."""
-    key = (name or "").lower().strip()
+    """Construct a model by name with shared data dims + per-model structural params.
+
+    ``name`` may be an **alias** ``'<model>@<variant>'`` (e.g. ``'atcnet@tcn8'``). The part
+    before ``@`` selects the implementation; the variant only affects which ``params`` were
+    resolved for it (see ``code/models/model_specs.py``), so it is stripped here. Aliases
+    stay distinct everywhere else — ``model_params`` keys, cell directory tags and
+    ``cell_signature`` — which is what lets several configurations of one model share a run.
+    """
+    key, _variant = split_alias((name or "").lower().strip())
     params = dict(params or {})
     base = dict(n_channels=n_channels, n_times=n_times, n_classes=n_classes)
+
+    if key in DEPRECATED_MODELS:
+        logger.warning("model '%s' is deprecated: %s", key, DEPRECATED_MODELS[key])
 
     if key == "eegnet":
         cfg = EEGNetConfig(**base, **_select(EEGNetConfig, params))
@@ -104,6 +157,14 @@ def build_model(
     if key == "atcnet":
         cfg = ATCNetConfig(**base, sfreq=float(sfreq), **_select(ATCNetConfig, params))
         return ATCNetClassifier(cfg)
+    if key == "atcnet_adv":
+        cfg = ATCNetAdvConfig(**base, sfreq=float(sfreq),
+                              **_select(ATCNetAdvConfig, params))
+        return ATCNetAdversarial(cfg)
+    if key == "atcnet_s4":
+        cfg = ATCNetS4Config(**base, sfreq=float(sfreq),
+                             **_select(ATCNetS4Config, params))
+        return ATCNetS4Classifier(cfg)
     if key in PAPER_BASELINE_NAMES:
         # `variant` is the model name itself, so drop it from params if a config passes it.
         p = {k: v for k, v in _select(PaperBaselineConfig, params).items()

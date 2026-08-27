@@ -31,7 +31,11 @@ import torch
 from torch import nn
 import torch.nn.functional as F
 
-from .encoders import ShallowNetEmbedding, TransformerERPEncoder
+from .encoders import (
+    DepthwiseShallowNetEmbedding,
+    ShallowNetEmbedding,
+    TransformerERPEncoder,
+)
 from .pooling import FlattenPooling, AttentionPooling, TemporalBinnedPooling
 from .s4_layers import S4Encoder as S4EncoderCore
 from .losses import (
@@ -105,6 +109,16 @@ class _BaseDualCDModel(nn.Module):
         self.num_classes = config.num_classes
         self.lambda_intra = lambda_intra
         self.teacher_momentum = teacher_momentum
+        # Read off the config so all four variants pick them up without signature churn.
+        # Defaults reproduce the original ported recipe exactly.
+        self.loss_weights = {
+            "dino": float(getattr(config, "w_dino", 1.0)),
+            "ibot": float(getattr(config, "w_ibot", 1.0)),
+            "dkoleo": float(getattr(config, "w_dkoleo", 0.1)),
+            "base": float(getattr(config, "w_base", 0.5)),
+            "perturb": float(getattr(config, "w_perturb", 0.5)),
+            "proto": float(getattr(config, "w_proto", 0.1)),
+        }
         sfreq = getattr(config, "sampling_rate", 200.0)
         self.multi_view = MultiViewGenerator(
             seq_len=config.seq_len, sfreq=sfreq,
@@ -121,6 +135,10 @@ class _BaseDualCDModel(nn.Module):
         for sp, tp in zip(self.student_encoder.parameters(), self.teacher_encoder.parameters()):
             tp.data.mul_(m).add_(sp.data, alpha=1 - m)
         for sp, tp in zip(self.student_proj.parameters(), self.teacher_proj.parameters()):
+            tp.data.mul_(m).add_(sp.data, alpha=1 - m)
+        # Only AttentionPooling (the `pos` variant) has parameters here; Flatten and
+        # TemporalBinned pool have none, so this loop is a no-op for those variants.
+        for sp, tp in zip(self.student_pool.parameters(), self.teacher_pool.parameters()):
             tp.data.mul_(m).add_(sp.data, alpha=1 - m)
 
     def _encode_student_flat(self, x):
@@ -212,7 +230,15 @@ class _BaseDualCDModel(nn.Module):
         # Prototype loss
         proto_loss = self.prototypes(z_causal).mean()
 
-        total = dino_loss + ibot_loss + 0.1 * dkoleo_loss + 0.5 * base_loss + 0.5 * perturb_loss + 0.1 * proto_loss
+        # Default weights (1 / 1 / 0.1 / 0.5 / 0.5 / 0.1) put ~85% of the gradient on the
+        # self-supervised terms and ~8% on the supervised CE. Reweighting was tested on the
+        # collapsing `pos` variant in both directions and changed nothing (RESULTS_TRUTH §4.1)
+        # — it makes the CE fall faster but does not move validation accuracy, so do not
+        # reach for this lever to fix a pooling problem.
+        w = self.loss_weights
+        total = (w["dino"] * dino_loss + w["ibot"] * ibot_loss + w["dkoleo"] * dkoleo_loss
+                 + w["base"] * base_loss + w["perturb"] * perturb_loss
+                 + w["proto"] * proto_loss)
 
         return total, {
             "dino": dino_loss, "ibot": ibot_loss, "dkoleo": dkoleo_loss,
@@ -451,13 +477,46 @@ class S4ERP(nn.Module):
         z = self.encoder(z)
         return z.reshape(z.size(0), -1)
 
-    def update_adv_lambda(self, epoch: int):
-        """Warmup schedule: lambda=0 for first warmup_epochs, then linear to lambda_adv."""
-        if epoch < self.adv_warmup_epochs:
-            self.grl.set_lambda(0.0)
-        else:
-            progress = (epoch - self.adv_warmup_epochs) / max(1, 50 - self.adv_warmup_epochs)
-            self.grl.set_lambda(self.lambda_adv * min(1.0, progress))
+    # NOTE: an `update_adv_lambda` was copy-pasted onto this class in the original package.
+    # It referenced `self.grl` and `self.adv_warmup_epochs`, which only `S4ERPAdversarial`
+    # has, so any caller that duck-typed on `hasattr(model, "update_adv_lambda")` — the
+    # adapter's `training_step` did — crashed with AttributeError on the plain model. It was
+    # latent because `s4erp` has `uses_custom_loss = False`, so the trainer never took that
+    # path. Removed; the method lives on `S4ERPAdversarial` where its attributes exist.
+
+
+# ── S4ERP + ATCNet depthwise spatial front-end (fusion direction A) ──────────
+
+class S4ERPDW(S4ERP):
+    """``S4ERP`` with ATCNet's depthwise spatial convolution instead of the dense one.
+
+    Everything downstream of the stem — the S4 encoder, the flatten pooling, the classifier
+    head — is byte-for-byte ``S4ERP``, so a comparison against ``s4erp`` isolates exactly
+    one factor: how the spatial filter bank is parameterized. See
+    ``encoders.DepthwiseShallowNetEmbedding`` for why only that factor is changed.
+
+    Parameter budget at 58 channels / ``d_model=128``::
+
+        stem      970,496 -> 25,984  (F1=64, D=2)      [-97%]
+        S4 encoder        275,712    (unchanged)
+        classifier        187,011    (unchanged)
+        total   1,433,219 -> 488,707
+
+    After the fix the classifier head (187k on 62,336-d flattened features) becomes the
+    largest remaining block. That is a *different* problem — the p >> n classifier width
+    diagnosed in ``docs/ANALYSIS_atcnet_and_adversarial.md`` §1.2 — and this model does not
+    address it; fusion direction B (``atcnet_s4``) does. The two are complementary.
+    """
+
+    def __init__(self, config, d_model=128, n_layers=4, state_dim=8,
+                 d_ff=256, dropout=0.1, dw_F1=64, dw_D=2):
+        super().__init__(config, d_model=d_model, n_layers=n_layers,
+                         state_dim=state_dim, d_ff=d_ff, dropout=dropout)
+        # Replace the stem in place: patch_num is identical, so the classifier built by
+        # S4ERP.__init__ already has the right input width.
+        self.embedding = DepthwiseShallowNetEmbedding(
+            config.num_channels, d_model, F1=dw_F1, D=dw_D, dropout=dropout,
+        )
 
 
 # ── S4ERP + Adversarial Domain Adaptation ────────────────────────────────────

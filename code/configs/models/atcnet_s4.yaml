@@ -1,0 +1,75 @@
+# atcnet_s4 — FUSION DIRECTION B: ATCNet stays the base, its temporal-aggregation stage
+# (5 independent TCN branches) becomes one SHARED CAUSAL state-space layer.
+#
+# WHY (all numbers derived from the official ATCNet at 1000 samples @ 250 Hz)
+#   * the conv block emits Tc = (1000 // 8) // 7 = 17 tokens of width F2 = 32;
+#   * one token covers 239 samples ≈ 956 ms, stride 56 samples ≈ 224 ms;
+#   * a Tw = 13-token window therefore spans ≈ 3,644 ms = 91% of the 4 s trial;
+#   * window i is read out at its LAST step = index i + Tw - 1, so the five readouts are
+#     indices 12,13,14,15,16 — the last five tokens;
+#   * the TCN's receptive field is 19 > Tw, so that last step already sees the whole window.
+#   => The five windows are five 224 ms-shifted copies of nearly the same view: an ENSEMBLE,
+#      not a multi-scale decomposition. Yet ATCNet spends five INDEPENDENT sets of TCN
+#      weights on them — 83,840 params, 73.1% of the model — to implement what should be a
+#      shift-equivariant operator.
+#
+#   One shared causal SSM resolves that: weight sharing costs 1/5 the parameters, causality
+#   keeps the readout at position t restricted to [0, t] (so the five readouts still differ,
+#   which is what preserves ensemble diversity), and each readout's receptive field is
+#   unbounded instead of clipped at 13 steps. The five independent Linear heads are kept —
+#   330 parameters, and they are where the ensemble actually lives.
+#
+# MEASURED (58ch / 2 classes)
+#   atcnet            114,554
+#   atcnet_s4          23,482   (-79.5%, 4.9x smaller)
+#   atcnet_s4@noattn   21,290   (5.4x smaller)
+#
+# CRITICAL IMPLEMENTATION NOTE
+#   S4Layer's default log_dt gives time constants of 6.8-546 steps, calibrated for S4ERP's
+#   487 patches. On Tc = 17 tokens, 7 of the 8 modes would have tau >> L and degenerate into
+#   a running mean, and the null result would be misread as "the SSM does not work here".
+#   `atcnet_s4.reinit_log_dt_for_length` re-draws dt log-uniformly in [1/L, N/L], giving
+#   tau in [0.27, 16.9] tokens at Tc = 17. The P1 smoke check asserts this range.
+#
+# NAMING
+#   The layer is a DIAGONAL SSM (only diag(A) of HiPPO-LegS is used), not the DPLR
+#   construction of Gu et al. 2022 — see docs/PLAN_cross_subject_benchmark_and_fusion.md §5.5.
+#
+# NO Keras L2 PENALTY: ATCNet's conv 0.009 / dense 0.5 constants were tuned for the official
+# 114k model. This one is 4.9x smaller with a different temporal stage; carrying them over
+# would make the comparison a two-variable change.
+#
+# Data dims (n_channels/n_times/n_classes/sfreq) are injected by the experiment layer.
+name: "atcnet_s4"
+
+defaults:
+  # convolutional (CV) block — identical to ATCNet's upstream defaults, so the conv stage is
+  # NOT a variable in the atcnet vs atcnet_s4 comparison
+  eegn_F1: 16
+  eegn_D: 2
+  eegn_kernelSize: 64
+  eegn_poolSize: 7
+  eegn_dropout: 0.3
+
+  # one shared CAUSALLY MASKED attention block (ATCNet has five independent, unmasked ones).
+  # The mask matters: without it, attention at readout 12 would see position 16 and all five
+  # readouts would collapse onto the same global view, destroying the ensemble.
+  attention: "mha"
+
+  # shared causal SSM replacing the 5 independent TCN branches
+  s4_layers: 2
+  s4_state_dim: 8
+  s4_d_ff: null        # null -> no feed-forward sub-layer, keeps a block at ~768 params
+  s4_dropout: 0.3
+
+  # readout: the last n_windows tokens = the official model's window ends
+  n_windows: 5
+  fuse: "average"
+
+per_dataset: {}
+
+variants:
+  # Drops the shared attention block. This is the single-variable counterpart of
+  # `atcnet@noattn`: comparing the two isolates exactly "5 independent TCNs vs 1 shared SSM".
+  noattn:
+    attention: null

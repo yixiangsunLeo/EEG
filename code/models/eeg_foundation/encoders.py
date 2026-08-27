@@ -51,6 +51,74 @@ class ShallowNetEmbedding(nn.Module):
         return x
 
 
+class DepthwiseShallowNetEmbedding(nn.Module):
+    """``ShallowNetEmbedding`` with ATCNet's **depthwise** spatial convolution.
+
+    Why
+    ---
+    ``ShallowNetEmbedding``'s spatial stage is a *dense* ``Conv2d(d_model, d_model, (C,1))``.
+    At 58 channels and ``d_model=128`` that is **950,400** parameters — 66% of the whole
+    S4ERP model — because the layer is quadratic in ``d_model``. ATCNet performs the same
+    functional role (learn a bank of spatial filters, i.e. CSP) with a **depthwise**
+    convolution costing **1,856** parameters, a 512x difference, and it carries an extra
+    prior the dense version throws away: each temporal filter (≈ frequency band) gets its
+    *own* set of ``D`` spatial filters, which is the FBCSP structure.
+
+    Deliberately a single-variable change
+    -------------------------------------
+    ATCNet's convolutional block differs from ShallowNet's in three ways: the depthwise
+    spatial convolution, a ``max_norm(0.6)`` kernel constraint, and a 64-sample temporal
+    kernel (vs 25). **Only the depthwise structure is changed here.** The other two are a
+    regularizer and an unrelated hyperparameter; changing them as well would make
+    ``s4erp`` vs ``s4erp_dw`` a three-variable comparison and the result uninterpretable.
+
+    Shapes
+    ------
+    ``(B, T, C)`` -> ``(B, patch_num, d_model)`` with the same
+    ``patch_num = (T - 28) // 2 + 1`` as the dense version, so the S4/Transformer backbone
+    and every pooling strategy are unaffected.
+
+    Parameters
+    ----------
+    c_in : int
+        Number of EEG channels (collapsed by the spatial stage).
+    d_model : int
+        Backbone width. The ``1x1`` projection maps ``F1*D -> d_model``, so ``F1*D`` is free
+        to differ from it (that is what the ``f16d2p`` variant uses).
+    F1 : int
+        Temporal filters ≈ frequency bands. ATCNet's own value is 16.
+    D : int
+        Spatial filters per band (ATCNet's ``depth_multiplier``). ATCNet's own value is 2.
+    """
+
+    def __init__(self, c_in: int, d_model: int, F1: int = 64, D: int = 2,
+                 dropout: float = 0.1):
+        super().__init__()
+        if F1 < 1 or D < 1:
+            raise ValueError(f"F1 and D must be >= 1, got F1={F1}, D={D}")
+        F2 = int(F1) * int(D)
+        self.F1, self.D, self.F2 = int(F1), int(D), F2
+        self.shallow_net = nn.Sequential(
+            nn.Conv2d(1, F1, (1, 25), (1, 1)),
+            # groups=F1 makes this depthwise: output filter j only sees temporal filter
+            # j // D, i.e. every band learns its own D spatial filters.
+            nn.Conv2d(F1, F2, (c_in, 1), (1, 1), groups=F1),
+            nn.BatchNorm2d(F2),
+            nn.ELU(),
+            nn.AvgPool2d((1, 4), (1, 2)),
+            nn.Dropout(dropout),
+        )
+        self.projection = nn.Conv2d(F2, d_model, (1, 1), stride=(1, 1))
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """(B, T, C) -> (B, patch_num, d_model)"""
+        x = x.permute(0, 2, 1).unsqueeze(1)  # (B, 1, C, T)
+        x = self.shallow_net(x)
+        x = self.projection(x)
+        x = x.squeeze(2).permute(0, 2, 1)  # (B, patch_num, d_model)
+        return x
+
+
 # ── Transformer Encoder ──────────────────────────────────────────────────────
 
 class TransformerAttention(nn.Module):

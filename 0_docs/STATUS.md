@@ -4,15 +4,41 @@ tags:
   - "#pipeline/5_dl_model"
   - "#modality/eeg"
 created: "2026-06-10"
-updated: "2026-08-10"
+updated: "2026-08-27"
 status: "active"
 ---
 
 # Status and Readiness
 
+> [!IMPORTANT]
+> **2026-08-27 — 新主线：跨被试 benchmark + ATCNet×S4ERP 融合。P0 工程阶段已完成，
+> 等待 P1 smoke 指令。** 权威计划 = [`docs/PLAN_cross_subject_benchmark_and_fusion.md`](../docs/PLAN_cross_subject_benchmark_and_fusion.md)。
+> 详细记录见 `progress.md` 顶部条目。要点：
+> * **域对抗线结案**（三条独立负证据：S4ERP-Adv 论文配方仅 +0.28pp、ATCNet-Adv −4.22pp、
+>   λ 扫描无差异）；`s4erp_adv` / `atcnet_adv` 退出实验但**代码保留**（弃用而非删除）。
+> * **数据集换到 WBCIC-SHU 2C（51 被试，从未做过跨被试）+ SHU 2022**；3C 本轮不用。
+>   2C 与 3C 是**互斥队列**（subjects 1–51 vs 52–62），不是子集。
+> * **两个融合模型已实现并通过测试**：`s4erp_dw@{f64d2,f16d8,f16d2p}`（方向 A，
+>   学长指定的 ATCNet depthwise 空间前端）与 `atcnet_s4`（方向 B，共享因果 SSM）。
+> * **17 个条目一次提交**，约 452 GPU-h ≈ 4.7 天（4 卡）。
+> * `pytest tests/ -q` → **134 passed**。**尚未 git commit**（需用户授权）。
+> * 复现入口：[`REPRODUCE.md`](../REPRODUCE.md)。
+
+> [!IMPORTANT]
+> **WBCIC-SHU 三分类跨被试的结果数字请以 [`docs/RESULTS_TRUTH.md`](../docs/RESULTS_TRUTH.md)
+> 为准**（2026-08-25 从原始 `result.json` 全部重算）。本文档下方的进度叙述停在 2026-08-21，
+> 不含 08-23/24 的 `foundation_cross_subject_3class_v1` 与 λ 扫描。
+> 另外 §1 引用的 `foundation_3c_loso_paper_v1`、`atcnet_3c_loso_paper_recipe_v1`、
+> `foundation_3c_loso_v1` 三个目录的 outputs 与 checkpoints **均已从磁盘删除**，
+> 只有汇总数字幸存。
+
 > 当前进度 + 能否继续跑 + SHU 就绪度 + 下一步 + 冗余/删除策略。逐条进度记忆在根目录 `progress.md`。
 
 ## 1. 一句话现状
+
+**2026-08-21：SHU 2022 实验二补跑 DualCD Flatten + Transformer。** 配方与已完成的 7 模型
+完全相同（写入同一 `shu_cross_subject_5fold_v1`）。先隔离 smoke，再两卡全量。监督 175 cell
+不重跑。
 
 **2026-08-10：WBCIC 3C 论文对齐 LOSO 已完成**——5 foundation（`foundation_3c_loso_paper_v1`）+
 ATCNet arm A（同 recipe）+ arm B（论文 recipe，`atcnet_3c_loso_paper_recipe_v1`）全部 11/11 ok。

@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import os
 import time
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -111,6 +112,48 @@ def _build_e2e_spec(args: argparse.Namespace, train_cfg: Dict):
         curves=bool(train_cfg.get("curves", False)),
         train_eval_max_trials=int(train_cfg.get("train_eval_max_trials", 2000)),
     )
+
+
+def _environment_fingerprint() -> Dict:
+    """Provenance for every run: code version, library versions, hardware.
+
+    AGENTS.md §7.5 requires recording "seed, data version, model hyperparameters, training
+    recipe, hardware". Everything but hardware/code-version was already stored; this closes
+    the gap, and it is what makes a published result reproducible by a third party.
+    """
+    import platform
+    import subprocess
+    import sys
+
+    import numpy
+    import torch
+
+    def _git(*a: str) -> str:
+        try:
+            return subprocess.run(("git",) + a, cwd=PROJECT_ROOT, capture_output=True,
+                                  text=True, timeout=10).stdout.strip()
+        except (OSError, subprocess.SubprocessError):
+            return ""
+
+    gpus = []
+    if torch.cuda.is_available():
+        for i in range(torch.cuda.device_count()):
+            p = torch.cuda.get_device_properties(i)
+            gpus.append({"name": p.name, "total_memory_gb": round(p.total_memory / 2**30, 1),
+                         "capability": f"{p.major}.{p.minor}"})
+    return {
+        "git_commit": _git("rev-parse", "HEAD"),
+        "git_dirty": bool(_git("status", "--porcelain")),
+        "python": sys.version.split()[0],
+        "platform": platform.platform(),
+        "torch": torch.__version__,
+        "torch_cuda_build": torch.version.cuda,
+        "cudnn": torch.backends.cudnn.version(),
+        "numpy": numpy.__version__,
+        "hostname": platform.node(),
+        "slurm_job_id": os.environ.get("SLURM_JOB_ID", ""),
+        "gpus": gpus,
+    }
 
 
 def _cuda_info(device):
@@ -577,6 +620,7 @@ def run_foundation_cross_subject(cfg: Dict, cfg_path: Path, args: argparse.Names
     from code.experiments.cross_subject_protocols import (
         CROSS_SUBJECT_RESULT_COLUMNS, run_cross_subject,
     )
+    from code.models.model_specs import resolve_all, safe_tag
     from code.utils.config import save_config
     from code.utils.io import save_json
     from code.utils.logging_utils import get_logger
@@ -632,9 +676,19 @@ def run_foundation_cross_subject(cfg: Dict, cfg_path: Path, args: argparse.Names
                 len(records), len({r.subject for r in records}), models, seeds,
                 protocol, n_folds, resume)
 
+    # Structural params come from `code/configs/models/<name>.yaml` (defaults + per_dataset
+    # + variants); the experiment's `model_params` block is an explicit override on top.
+    # Resolving here — once, before any training — means the exact dict handed to every cell
+    # is also the dict written to `resolved_model_params.json` for the record.
+    model_params_all = resolve_all(
+        models, dataset=dataset,
+        experiment_params_all=cfg.get("model_params", {}) or {},
+    )
+    save_json(model_params_all, out_dir / "resolved_model_params.json")
+
     res = run_cross_subject(
         records, dataset=dataset, models=models,
-        model_params_all=cfg.get("model_params", {}) or {}, data_dims=data_dims,
+        model_params_all=model_params_all, data_dims=data_dims,
         spec=spec, seeds=seeds, device=device, protocol=protocol, n_folds=n_folds,
         folds_subset=folds_subset, val_mode=cs_cfg.get("val_mode", "subjects"),
         n_val_subjects=cs_cfg.get("n_val_subjects"),
@@ -654,7 +708,7 @@ def run_foundation_cross_subject(cfg: Dict, cfg_path: Path, args: argparse.Names
     for model_name in models:
         rows = [r for r in res["rows"] if r.get("model") == model_name]
         if rows:
-            _write_rows(rows, runs_dir / f"cross_subject__{model_name}{suffix}.csv",
+            _write_rows(rows, runs_dir / f"cross_subject__{safe_tag(model_name)}{suffix}.csv",
                         CROSS_SUBJECT_RESULT_COLUMNS)
     save_json({"run_id": run_id, "dataset": dataset, "models": list(models),
                "seeds": list(seeds), "split_seeds": res.get("split_seeds"),
@@ -663,8 +717,18 @@ def run_foundation_cross_subject(cfg: Dict, cfg_path: Path, args: argparse.Names
                "n_cells_ok": res["n_cells_ok"], "n_cells_failed": res["n_cells_failed"],
                "failures": res["failures"], "checkpoint_names": res["checkpoint_names"],
                "resume": resume, "spec": vars(spec), "data_dims": data_dims,
-               "cuda": cuda_info, "elapsed_sec": round(time.time() - t0, 1)},
+               "model_params": model_params_all,
+               "cuda": cuda_info, "environment": _environment_fingerprint(),
+               "elapsed_sec": round(time.time() - t0, 1)},
               runs_dir / f"meta_cross_subject{suffix}.json")
+    # Failures also go to a dedicated file: with 340 cells a sweep must not require
+    # grepping a 2 MB meta json (or the Slurm log) to find out what broke.
+    save_json({"run_id": run_id, "n_cells_failed": res["n_cells_failed"],
+               "failures": res["failures"]},
+              out_dir / f"failures{suffix}.json")
+    if res["n_cells_failed"]:
+        logger.error("%d cell(s) FAILED — see %s",
+                     res["n_cells_failed"], out_dir / f"failures{suffix}.json")
     logger.info("ALL DONE in %.1fs | rows=%d ok=%d failed=%d | out=%s",
                 time.time() - t0, len(res["rows"]), res["n_cells_ok"],
                 res["n_cells_failed"], out_dir)

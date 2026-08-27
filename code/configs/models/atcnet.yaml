@@ -1,32 +1,64 @@
 # ATCNet (Altaheri et al. 2023, IEEE TII) — official implementation, ported to PyTorch.
 # Source: https://github.com/Altaheri/EEG-ATCNet (Keras), vendored verbatim under
 #   code/models/atcnet/_official_keras/ and transcribed in code/models/atcnet/atcnet_torch.py.
-# Every value below is the UPSTREAM DEFAULT of `ATCNet_` (models.py L34-L37). Do not tune:
+#
+# `defaults` are the UPSTREAM DEFAULTS of `ATCNet_` (models.py L34-L37). Do not tune them:
 # this model is a published reference point for the DSGNet comparison (paper Acc 0.6834),
 # not one of our candidates.
+#
+# `variants` are the explanatory ablations, addressed as `atcnet@<variant>`. They are
+# distinct model names everywhere downstream (model_params keys, cell dirs, cell_signature),
+# so all four configurations can share one run and stay pairwise comparable.
+#
 # Data dims (n_channels/n_times/n_classes/sfreq) are injected by the experiment layer.
 name: "atcnet"
 
-# convolutional (CV) block
-eegn_F1: 16
-eegn_D: 2
-eegn_kernelSize: 64
-eegn_poolSize: 7
-eegn_dropout: 0.3
+defaults:
+  # convolutional (CV) block
+  eegn_F1: 16
+  eegn_D: 2
+  eegn_kernelSize: 64
+  eegn_poolSize: 7
+  eegn_dropout: 0.3
 
-# attention (AT) block — upstream ATCNet_ uses multi-head self-attention
-attention: "mha"
+  # attention (AT) block — upstream ATCNet_ uses multi-head self-attention
+  attention: "mha"
 
-# temporal convolutional (TC) block
-tcn_depth: 2
-tcn_kernelSize: 4
-tcn_filters: 32
-tcn_dropout: 0.3
+  # temporal convolutional (TC) block
+  tcn_depth: 2
+  tcn_kernelSize: 4
+  tcn_filters: 32
+  tcn_dropout: 0.3
 
-# sliding window + fusion
-n_windows: 5
-fuse: "average"
+  # sliding window + fusion
+  n_windows: 5
+  fuse: "average"
 
-# Keras folds L2 kernel regularizers (conv 0.009 / dense 0.5) into the loss; we reproduce
-# them through the trainer's custom-loss hook. Set false to drop them (NOT upstream).
-use_official_l2: true
+  # Keras folds L2 kernel regularizers (conv 0.009 / dense 0.5) into the loss; we reproduce
+  # them through the trainer's custom-loss hook. Set false to drop them (NOT upstream).
+  use_official_l2: true
+
+# Both datasets are 58/32 ch x 1000 samples @ 250 Hz, and the channel count is injected by
+# the experiment layer, so Tc = (1000 // 8) // 7 = 17 is identical and nothing needs a
+# per-dataset override. The mechanism stays so a third dataset needs no code change.
+per_dataset: {}
+
+variants:
+  # Is the TCN over-parameterized? It holds 83,840 params = 73.1% of the model, and
+  # tcn_filters scales it roughly quadratically (-> ~10,760 at 8, a 7.8x cut). If accuracy
+  # drops <1pp, the 3,840-parameter shared SSM of `atcnet_s4` has room to replace it.
+  tcn8:
+    tcn_filters: 8
+
+  # How much of ATCNet's advantage is the 5-window logit ensemble? A single window keeps the
+  # same receptive field (one 13-token window already spans 91% of the 4 s trial) but loses
+  # the ensemble. Hypothesis H2 in docs/ANALYSIS_atcnet_and_adversarial.md §1.3 predicts a
+  # 3-5pp drop if the ensemble is the main mechanism.
+  nwin1:
+    n_windows: 1
+
+  # Is the attention block decorative? 10,960 params (9.6%), 2 heads, key_dim 8, acting on a
+  # 13-step sequence, positioned before the TCN. Hypothesis H3 (§1.4) predicts <1pp.
+  # Also the single-variable counterpart of `atcnet_s4@noattn`.
+  noattn:
+    attention: null

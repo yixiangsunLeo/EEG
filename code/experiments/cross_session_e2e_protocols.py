@@ -63,7 +63,9 @@ from ..utils.io import save_json
 from ..utils.paths import ses_id, sub_id
 from ..utils.seed import set_seed
 from .cross_subject_protocols import (
+    SIGNATURE_VERSION,
     SubjectData,
+    _stopping_identity,
     _loader,
     _make_dataset,
     _trial_val_split,
@@ -163,8 +165,13 @@ def _subject_index(subject: str) -> int:
 def cell_signature(fold: CrossSessionFold, *, dataset: str, model_name: str,
                    model_params: Dict, data_dims: Dict, spec: E2ESpec,
                    protocol: str, seed: int) -> str:
-    """Fingerprint of everything a resumed cell must not have changed."""
+    """Fingerprint of everything a resumed cell must not have changed.
+
+    The early-stopping settings are included because they decide which epoch becomes
+    ``best.pt``; see ``cross_subject_protocols._stopping_identity``.
+    """
     payload = {
+        "signature_version": SIGNATURE_VERSION,
         "dataset": dataset, "model": model_name, "protocol": protocol,
         "seed": int(seed), "subject": fold.subject,
         "train_sessions": sorted(fold.train_sessions),
@@ -176,6 +183,7 @@ def cell_signature(fold: CrossSessionFold, *, dataset: str, model_name: str,
         "optimizer": spec.optimizer, "lr": spec.lr, "weight_decay": spec.weight_decay,
         "batch_size": spec.batch_size, "scheduler": spec.scheduler,
         "grad_clip_norm": spec.grad_clip_norm, "val_fraction": spec.val_fraction,
+        **_stopping_identity(spec),
         "micro_batch_size": spec.micro_batch_size,
     }
     blob = json.dumps(payload, sort_keys=True, default=str).encode("utf-8")
@@ -211,6 +219,13 @@ def run_cell(
     if resume and paths.is_complete():
         with open(paths.result_json, "r", encoding="utf-8") as f:
             done = json.load(f)
+        stored_version = int(done.get("signature_version", 1))
+        if stored_version != SIGNATURE_VERSION:
+            raise RuntimeError(
+                f"{paths.result_json} was written with cell-signature v{stored_version}, "
+                f"but this code computes v{SIGNATURE_VERSION} (v2 added max_epochs and "
+                "early_stopping_patience). Historical runs are read-only; use a fresh --out."
+            )
         stored = done.get("cell_signature")
         if stored is not None and stored != signature:
             raise RuntimeError(
@@ -342,7 +357,8 @@ def run_cell(
 
     save_json({
         "dataset": dataset, "model": model_name, "fold": asdict(fold), "seed": int(seed),
-        "protocol": protocol, "cell_signature": signature, "data_dims": data_dims,
+        "protocol": protocol, "cell_signature": signature,
+        "signature_version": SIGNATURE_VERSION, "data_dims": data_dims,
         "model_params": model_params, "model_desc": desc, "spec": asdict(spec),
         "train_info": {k: v for k, v in info.items() if k != "history"},
         "history": info["history"], "per_session": per_session_detail,

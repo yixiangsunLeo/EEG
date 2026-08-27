@@ -42,18 +42,24 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from ...utils.logging_utils import get_logger
+from .encoders import DepthwiseShallowNetEmbedding
 from .models import (
     S4ERP,
     S4ERPAdversarial,
+    S4ERPDW,
     UnifiedDINODualCD_S4_Flatten,
     UnifiedDINODualCD_S4_Pos,
     UnifiedDINODualCD_S4_Timepatch,
     UnifiedDINODualCD_Transformer,
 )
 
+logger = get_logger("models.eeg_foundation")
+
 #: variant name -> (class, is_dualcd, default n_layers)
 VARIANTS: Dict[str, Tuple[type, bool, int]] = {
     "s4erp": (S4ERP, False, 4),
+    "s4erp_dw": (S4ERPDW, False, 4),
     "s4erp_adv": (S4ERPAdversarial, False, 4),
     "dualcd_s4_pos": (UnifiedDINODualCD_S4_Pos, True, 4),
     "dualcd_s4_timepatch": (UnifiedDINODualCD_S4_Timepatch, True, 4),
@@ -63,8 +69,28 @@ VARIANTS: Dict[str, Tuple[type, bool, int]] = {
 
 VARIANT_NAMES: List[str] = list(VARIANTS)
 
+#: Variants with a gradient-reversal branch. Used instead of a ``"adv" in name`` substring
+#: test so the check cannot be fooled by a future name.
+_ADVERSARIAL_VARIANTS = frozenset({"s4erp_adv"})
+
+#: Variants kept for reproducibility of already-published numbers but excluded from new
+#: comparisons. Building one logs a warning; see ``code/models/registry.py`` for the
+#: project-wide deprecation table and the evidence behind each entry.
+DEPRECATED_VARIANTS: Dict[str, str] = {
+    "s4erp_adv": (
+        "subject-adversarial arm is closed: the +2.92pp seen under our recipe collapses to "
+        "+0.28pp under the paper recipe (adv_821recipe_3c_v1), i.e. the gain was generic "
+        "regularization, not subject invariance. Use 's4erp'."
+    ),
+    "dualcd_s4_pos": (
+        "representation collapse (45.11% on 3-class LOSO, chance 33.3%); attention pooling "
+        "destroys the temporal structure MI needs (docs/RESULTS_TRUTH.md §4.1). "
+        "Use 'dualcd_s4_flatten' or 'dualcd_s4_timepatch'."
+    ),
+}
+
 #: Learning rates recommended by the source package (DualCD is 10x lower).
-DEFAULT_LR = {"s4erp": 1e-3, "s4erp_adv": 1e-3, "_dualcd": 1e-4}
+DEFAULT_LR = {"s4erp": 1e-3, "s4erp_dw": 1e-3, "s4erp_adv": 1e-3, "_dualcd": 1e-4}
 
 
 @dataclass
@@ -92,9 +118,15 @@ class EEGFoundationConfig:
     d_ff: int = 256
     dropout: float = 0.1
 
-    # Adversarial (s4erp_adv only)
+    # Depthwise spatial front-end (s4erp_dw only). ATCNet's own values are F1=16, D=2;
+    # the default below keeps F1*D == d_model so the 1x1 projection stays a no-op width.
+    dw_F1: int = 64
+    dw_D: int = 2
+
+    # Adversarial (s4erp_adv only, deprecated)
     n_subjects: int = 11
     lambda_adv: float = 0.1
+    adv_warmup_epochs: int = 5
 
     # DualCD / DINO
     lambda_intra: float = 0.5
@@ -111,6 +143,17 @@ class EEGFoundationConfig:
     # temporal-binned pooling (dualcd_s4_timepatch only), in ms relative to trial start
     bin_boundaries_ms: Optional[List[float]] = field(default=None)
     use_std: bool = True
+
+    # DualCD loss weights. Defaults reproduce the original ported recipe byte-for-byte,
+    # so leaving them alone keeps every existing DualCD result comparable. Note that
+    # reweighting did NOT rescue dualcd_s4_pos (docs/RESULTS_TRUTH.md §4.1) — its problem
+    # is the pooling, not the loss balance.
+    w_dino: float = 1.0
+    w_ibot: float = 1.0
+    w_dkoleo: float = 0.1
+    w_base: float = 0.5
+    w_perturb: float = 0.5
+    w_proto: float = 0.1
 
     # ---- shim so the ported models see their own attribute names ----
     @property
@@ -171,10 +214,16 @@ class EEGFoundationClassifier(nn.Module):
         self.variant = variant
         self.is_dualcd = is_dualcd
         n_layers = cfg.resolved_n_layers()
+        if variant in DEPRECATED_VARIANTS:
+            logger.warning("model '%s' is deprecated: %s", variant,
+                           DEPRECATED_VARIANTS[variant])
 
         common = dict(d_model=cfg.d_model, n_layers=n_layers, d_ff=cfg.d_ff, dropout=cfg.dropout)
         if variant == "s4erp":
             self.model = klass(cfg, state_dim=cfg.state_dim, **common)
+        elif variant == "s4erp_dw":
+            self.model = klass(cfg, state_dim=cfg.state_dim, **common,
+                               dw_F1=cfg.dw_F1, dw_D=cfg.dw_D)
         elif variant == "s4erp_adv":
             self.model = klass(cfg, state_dim=cfg.state_dim, **common,
                                n_subjects=cfg.n_subjects, lambda_adv=cfg.lambda_adv)
@@ -229,9 +278,18 @@ class EEGFoundationClassifier(nn.Module):
     # training hooks (used by code/training/e2e_trainer.py)
     # ------------------------------------------------------------------ #
     @property
+    def is_adversarial(self) -> bool:
+        """True only for variants that actually carry a gradient-reversal branch.
+
+        Declared as a property over an explicit set rather than a substring test, so a future
+        variant whose name happens to contain "adv" cannot accidentally opt in (or out).
+        """
+        return self.variant in _ADVERSARIAL_VARIANTS
+
+    @property
     def uses_custom_loss(self) -> bool:
         """True for DualCD and adversarial variants (non-plain-CE losses)."""
-        return self.is_dualcd or "adv" in self.variant
+        return self.is_dualcd or self.is_adversarial
 
     def training_step(self, x: torch.Tensor, y: torch.Tensor, epoch: int = 0,
                       subject_ids: Optional[torch.Tensor] = None
@@ -240,16 +298,27 @@ class EEGFoundationClassifier(nn.Module):
 
         DualCD: ``dino + ibot + 0.1*dkoleo + 0.5*base + 0.5*perturb + 0.1*proto``
         (exact weights live in the ported ``_BaseDualCDModel.compute_loss``).
-        S4ERP: plain cross-entropy.
+        S4ERP / S4ERP-DW: plain cross-entropy.
         """
         if self.is_dualcd:
+            # A hypothetical `dualcd_*_adv` variant would fall into this branch and its
+            # adversarial term would be silently dropped — the same class of bug as commit
+            # c0cc95e (`uses_custom_loss` falling through to plain CE). Fail loudly instead.
+            if subject_ids is not None or hasattr(self.model, "update_adv_lambda"):
+                raise NotImplementedError(
+                    f"variant '{self.variant}' is a DualCD model, so training_step returns "
+                    "the DualCD loss and would silently ignore an adversarial branch. "
+                    "Wire the adversarial term into compute_loss before using it."
+                )
             loss, parts = self.model.compute_loss(
                 _as_time_last(x), y, epoch=int(epoch),
                 warmup_epochs=self.config.warmup_epochs,
             )
             return loss, {k: float(v.detach().item()) for k, v in parts.items()}
-        # Update adversarial lambda (warmup schedule)
-        if hasattr(self.model, "update_adv_lambda"):
+        # Gate on the variant, not on `hasattr(model, "update_adv_lambda")`: duck-typing here
+        # is what made a stray copy of that method on plain `S4ERP` crash this path (the
+        # method referenced `self.grl`, which only the adversarial model has).
+        if self.is_adversarial:
             self.model.update_adv_lambda(epoch)
         out = self.forward(x)
         logits = out["logits"]
@@ -271,12 +340,13 @@ class EEGFoundationClassifier(nn.Module):
         self.model.update_prototypes(_as_time_last(x), y)
 
     def default_lr(self) -> float:
-        return DEFAULT_LR["s4erp"] if self.variant == "s4erp" else DEFAULT_LR["_dualcd"]
+        return DEFAULT_LR.get(self.variant, DEFAULT_LR["_dualcd"])
 
     def describe(self) -> Dict[str, object]:
         n_all = sum(p.numel() for p in self.parameters())
         n_trainable = sum(p.numel() for p in self.parameters() if p.requires_grad)
-        return {
+        d = {
+            "name": self.variant,
             "variant": self.variant,
             "is_dualcd": self.is_dualcd,
             "feature_dim": self.feature_dim,
@@ -287,6 +357,11 @@ class EEGFoundationClassifier(nn.Module):
             "n_classes": self.config.n_classes,
             "sfreq": self.config.sfreq,
         }
+        stem = getattr(self.model, "embedding", None)
+        if isinstance(stem, DepthwiseShallowNetEmbedding):
+            d.update({"dw_F1": stem.F1, "dw_D": stem.D,
+                      "stem_params": sum(p.numel() for p in stem.parameters())})
+        return d
 
 
 def build_eeg_foundation(variant: str, *, n_channels: int, n_times: int, n_classes: int,

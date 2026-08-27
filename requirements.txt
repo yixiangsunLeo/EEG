@@ -1,0 +1,31 @@
+# Exact versions of the environment every reported number was produced with
+# (conda env `mi_torch_cu118`, Python 3.10.18, driver CUDA 12.8 on RTX 4090D).
+#
+# PyTorch is pinned to the cu118 wheels, which are NOT on PyPI. Install it first:
+#
+#   pip install --index-url https://download.pytorch.org/whl/cu118 \
+#       torch==2.7.1+cu118 torchvision==0.22.1+cu118 torchaudio==2.7.1+cu118
+#   pip install -r requirements.txt
+#
+# A CPU-only install works for smoke tests (`--device cpu`) but not for full runs; see
+# REPRODUCE.md. cu121/cu124 wheels are also compatible with a 12.8 driver.
+
+torch==2.7.1+cu118
+torchvision==0.22.1+cu118
+torchaudio==2.7.1+cu118
+
+numpy==2.2.5
+scipy==1.15.3            # >=1.7 required: scipy.stats.studentized_range (Nemenyi CD)
+scikit-learn==1.7.1
+pandas==2.2.3
+matplotlib==3.10.0
+PyYAML==6.0.2
+
+# Preprocessing only (raw EDF/MAT -> npz). Not needed to re-run training from the
+# published processed manifests.
+mne==1.10.0
+
+# Figures / progress reporting
+seaborn==0.13.2
+tqdm==4.67.1
+pillow==11.0.0

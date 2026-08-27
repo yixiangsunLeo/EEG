@@ -12,19 +12,28 @@ import numpy as np
 
 
 def classification_metrics(y_true: np.ndarray, y_pred: np.ndarray) -> Dict[str, float]:
-    """返回 accuracy / balanced_accuracy / macro_f1。"""
+    """返回 accuracy / balanced_accuracy / macro_f1 / cohen_kappa。
+
+    ``cohen_kappa`` 是 chance-corrected agreement，MI 解码文献的标准列之一
+    （DSGNet 论文 Table II 报的就是 Acc / F1 / Kappa 三列）。退化情形
+    （只有一个类别出现在真值和预测里）sklearn 返回 nan，这里如实传递。
+    """
     from sklearn.metrics import (
         accuracy_score,
         balanced_accuracy_score,
+        cohen_kappa_score,
         f1_score,
     )
 
     y_true = np.asarray(y_true).ravel()
     y_pred = np.asarray(y_pred).ravel()
+    with np.errstate(invalid="ignore", divide="ignore"):
+        kappa = float(cohen_kappa_score(y_true, y_pred))
     return {
         "accuracy": float(accuracy_score(y_true, y_pred)),
         "balanced_accuracy": float(balanced_accuracy_score(y_true, y_pred)),
         "macro_f1": float(f1_score(y_true, y_pred, average="macro")),
+        "cohen_kappa": kappa,
     }
 
 

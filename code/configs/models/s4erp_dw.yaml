@@ -1,0 +1,67 @@
+# s4erp_dw — FUSION DIRECTION A (the advisor-specified main line, 2026-08-26):
+#   "空间滤波打算使用 ATCNet 的" — S4ERP stays the base, its spatial stage becomes ATCNet's.
+#
+# WHY
+#   ShallowNetEmbedding's spatial stage is a DENSE Conv2d(d_model, d_model, (C,1)). At 58ch
+#   and d_model=128 that is 950,400 parameters — 66% of the whole S4ERP model — because the
+#   layer is quadratic in d_model. ATCNet fills the same functional role (learn a bank of
+#   spatial filters, i.e. CSP) with a DEPTHWISE convolution costing 1,856 parameters, a 512x
+#   difference, and it carries a prior the dense version discards: every temporal filter
+#   (≈ frequency band) gets its own D spatial filters — the FBCSP structure.
+#
+# SINGLE-VARIABLE BY DESIGN
+#   ATCNet's conv block differs from ShallowNet's in three ways: the depthwise spatial conv,
+#   a max_norm(0.6) kernel constraint, and a 64-sample temporal kernel (vs 25). ONLY the
+#   depthwise structure is changed. The other two are a regularizer and an unrelated
+#   hyperparameter; changing them too would make `s4erp` vs `s4erp_dw` uninterpretable.
+#
+# WHAT IT DOES NOT FIX
+#   After the stem shrinks, the largest remaining block is the 187k/125k classifier head on
+#   62,336-d flattened features — the p >> n width diagnosed in
+#   docs/ANALYSIS_atcnet_and_adversarial.md §1.2. Fusion direction B (`atcnet_s4`) attacks
+#   that instead. The two are complementary, not alternatives.
+#
+# Everything downstream of the stem (S4 encoder, flatten pooling, classifier) is
+# byte-for-byte S4ERP, so `s4erp` is the paired control.
+# Data dims (n_channels/n_times/n_classes/sfreq) are injected by the experiment layer.
+name: "s4erp_dw"
+
+defaults:
+  d_model: 128
+  n_layers: 4
+  state_dim: 8
+  d_ff: 256
+  dropout: 0.1
+
+per_dataset: {}
+
+# F1*D is the depthwise stage's output width; the 1x1 projection maps it to d_model, so F1*D
+# is free to differ from 128. Measured parameter counts at 58ch / 2 classes:
+#
+#   variant   F1   D   stem params   total      vs s4erp (1,370,882)
+#   ------------------------------------------------------------------
+#   (dense)  128   -       970,496   1,370,882          --
+#   f64d2     64   2        25,984     426,370        -68.9%
+#   f16d8     16   8        24,736     425,122        -69.0%
+#   f16d2p    16   2         6,592     406,978        -70.3%
+#
+# The stem cost is (F1*D)*C + F1*25 + BN + projection, so it barely depends on the F1/D
+# split — but the split decides HOW MANY frequency bands exist, which is a real architectural
+# difference. All three are run and reported; the representative is picked by mean validation
+# macro-F1 across folds, never by test accuracy.
+variants:
+  # Minimal change to S4ERP: keep F1*D == d_model so the projection stays a 128->128 map.
+  f64d2:
+    dw_F1: 64
+    dw_D: 2
+
+  # ATCNet's band count (16) with the width made up by D=8 spatial filters per band.
+  f16d8:
+    dw_F1: 16
+    dw_D: 8
+
+  # Faithful to ATCNet's own F1=16 / D=2; the 1x1 projection lifts 32 -> 128 for the
+  # backbone. Smallest stem of the three.
+  f16d2p:
+    dw_F1: 16
+    dw_D: 2

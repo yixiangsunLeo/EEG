@@ -110,6 +110,31 @@ class DeepConvNet(nn.Module):
         x = self.blocks(x)
         return torch.flatten(x, start_dim=1)
 
+    def default_lr(self) -> float:
+        """1e-3 — the value this model has always received via ``E2ESpec``'s fallback.
+
+        Stated explicitly so the recipe is recorded rather than inherited from a default
+        buried in the trainer.
+        """
+        return 1e-3
+
+    def describe(self) -> dict:
+        """Model card for the results table.
+
+        Without this, ``run_cell`` records ``n_params = 0`` (it only reads ``describe()``),
+        which is why the SHU cross-subject table has a zero in the parameter column for
+        this model.
+        """
+        return {
+            "name": "deepconvnet",
+            "source": "Schirrmeister et al. 2017, braindecode-style configuration",
+            "n_params": sum(p.numel() for p in self.parameters()),
+            "feature_dim": self.feature_dim,
+            "n_channels": self.config.n_channels,
+            "n_times": self.config.n_times,
+            "n_classes": self.config.n_classes,
+        }
+
     def forward(self, x: torch.Tensor) -> dict:
         feats = self._features(x)
         logits = self.classifier(feats)
