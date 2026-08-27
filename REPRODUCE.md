@@ -137,12 +137,15 @@ for m, v in sorted(a.items(), key=lambda kv: -sum(kv[1])):
 "
 ```
 
-## 5. Full sweep (about 4.9 days, 4 GPUs)
+## 5. Full sweep (about 3.2 days, 4 GPUs)
 
 ```bash
-bash scripts/slurm/submit_bench.sh wbci_2c      # 180 cells, ~384 GPU-h
-bash scripts/slurm/submit_bench.sh shu          # 180 cells, ~85 GPU-h
+bash scripts/slurm/submit_bench.sh wbci_2c      # 180 cells, ~227 GPU-h
+bash scripts/slurm/submit_bench.sh shu          # 180 cells, ~83 GPU-h
 ```
+
+Those totals are measured, not estimated: per-epoch cost comes from the smoke run and the
+epoch count from a completed run on the same recipe. See the plan's §7 for the breakdown.
 
 Each dataset is split into 4 groups (one GPU each, the QOS limit) and each group is chained
 across 4 jobs with `--dependency=afterany`. Every link runs the same command; the resume

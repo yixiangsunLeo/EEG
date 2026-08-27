@@ -552,41 +552,65 @@ train:
 
 ---
 
-## 7. 算力预算（决定 25 之后）
+## 7. 算力预算（决定 25 之后；**2026-08-27 用 smoke 47237/47355 实测重算**）
 
-单 cell 成本。组 1 是旧 SHU run 实测（同配方）；组 2/3/4 是估算，**P1 smoke 后替换**。
+单 cell 成本 = (单 epoch 秒数) × (收敛 epoch 数)。前者：2C 由 smoke 实测 10 个条目，
+其余按下方缩放；后者：全部取旧 SHU run `cross_subject_5fold_v1` 的实测 `epochs_run`
+（同配方、同 patience 25），新条目取同族参照物。
 
-| 组 | 条目 | SHU 单 cell | 2C 单 cell¹ |
-|:--|:---|---:|---:|
-| 1 | `dualcd_transformer` | 2.217 h（实测） | ~10.0 h |
-| 1 | `dualcd_s4_flatten` | 1.704 h（实测） | ~7.7 h |
-| 1 | `dualcd_s4_timepatch` | ~1.5 h（估） | ~6.8 h |
-| 1 | `atcnet` | 0.494 h（实测） | ~2.2 h |
-| 1 | `s4erp` | 0.159 h（实测） | ~0.7 h |
-| 1 | `eegnex` | 0.142 h（实测） | ~0.6 h |
-| 1 | `eeg_deformer` | 0.094 h（实测） | ~0.4 h |
-| 1 | `fbcnet` | 0.082 h（实测） | ~0.4 h |
-| 1 | `eegnet_official` | 0.041 h（实测） | ~0.2 h |
-| 1 | `deepconvnet` | 0.037 h（实测） | ~0.2 h |
-| **1** | **小计（10 个）** | **6.47 h** | **~29.1 h** |
-| 2 | `s4erp_dw` × 3 | ~0.39 h（估） | ~1.8 h |
-| 3 | `atcnet_s4` + `@noattn` | ~0.60 h（估） | ~2.8 h |
-| 4 | `atcnet@tcn8` / `@nwin1` / `@noattn` | ~1.04 h（估） | ~4.7 h |
-| **合计** | **18 个条目** | **~8.50 h** | **~38.4 h** |
+**原估算用了统一的 4.5× 缩放（2.46 试次 × 1.81 通道），实测证明它是错的**——
+缩放比取决于前端是否吃通道数：
 
-¹ 缩放 ≈ 4.5×：训练集 17,700/7,200 = 2.46，通道 58/32 = 1.81。
+| 模型 | SHU s/epoch | 2C s/epoch | 实测比 |
+|:---|---:|---:|---:|
+| `eegnet_official` | 2.2 | 11.1 | **×4.96** |
+| `s4erp` | 13.9 | 69.9 | **×5.03** |
+| `atcnet` | 22.7 | 56.5 | **×2.49** |
+| `dualcd_transformer` | 216.5 | 556.8 | **×2.57** |
 
-| run | cells | GPU-h |
-|:---|---:|---:|
-| `wbci_2c_cross_subject_bench_v1`：18 × 5 折 × 2 split | **180** | ~384 |
-| `shu_cross_subject_bench_v1`：18 × 5 折 × 2 split | **180** | ~85 |
-| **合计** | **360** | **~469** |
+前端把通道压掉的（ATCNet 的 depthwise、DINO 的 patch embedding）≈ **2.5×**，即纯试次比；
+前端 dense 吃通道的（S4ERP 的 `Conv2d(128,128,(58,1))`、EEGNet）≈ **5.0×**。
+未实测条目按所属族的比例缩放。
 
-4 卡并行（QOS `gres/gpu=4` 硬上限）→ 墙钟约 **117 小时 ≈ 4.9 天**。
+| 条目 | epochs | 2C s/epoch | 2C h/cell | SHU h/cell | 来源 |
+|:---|---:|---:|---:|---:|:---|
+| `dualcd_transformer` | 36.9 | 556.8 | **5.704** | 2.217 | 实测 |
+| `dualcd_s4_timepatch` | 38.8 | 406.6 | **4.382** | 1.705 | 实测 |
+| `dualcd_s4_flatten` | 38.8 | 406.2 | 4.378 | 1.704 | 缩放 ×2.57 |
+| `atcnet` | 78.5 | 56.5 | **1.232** | 0.494 | 实测 |
+| `atcnet@nwin1` | 78.5 | 56.5 | 1.232 | 0.479 | 缩放（保守取满） |
+| `atcnet@noattn` | 78.5 | 56.5 | 1.232 | 0.479 | 缩放（保守取满） |
+| `s4erp` | 41.3 | 69.9 | **0.802** | 0.159 | 实测 |
+| `eegnex` | 81.6 | 31.6 | 0.716 | 0.142 | 缩放 ×5.03 |
+| `atcnet@tcn8` | 78.5 | 25.9 | **0.566** | 0.220 | 实测 |
+| `eeg_deformer` | 43.2 | 39.3 | 0.472 | 0.094 | 缩放 ×5.03 |
+| `fbcnet` | 130.7 | 11.3 | 0.410 | 0.082 | 缩放 ×5.03 |
+| `atcnet_s4` | 78.5 | **11.6** | **0.252** | 0.098 | 实测 |
+| `atcnet_s4@noattn` | 78.5 | **11.4** | **0.249** | 0.097 | 实测 |
+| `s4erp_dw@f64d2` | 41.3 | 20.9 | **0.240** | 0.093 | 实测 |
+| `s4erp_dw@f16d8` | 41.3 | 20.9 | 0.240 | 0.093 | 缩放 |
+| `eegnet_official` | 66.3 | 11.1 | **0.204** | 0.041 | 实测 |
+| `deepconvnet` | 46.9 | 14.4 | 0.187 | 0.037 | 缩放 ×5.03 |
+| `s4erp_dw@f16d2p` | 41.3 | 13.3 | **0.153** | 0.059 | 实测 |
 
-**对比原分阶段方案（356 GPU-h / 3.7 天）：多 ~1.2 天，换来 18 个条目两两可配对检验。**
-3 个 DINO 变体仍占约 73% 算力，不裁剪 —— 它们是 Claim B 的重要论据
-（67M 参数换来垫底表现）。
+| run | cells | GPU-h（实测重算） | 原估算 |
+|:---|---:|---:|---:|
+| `wbci_2c_cross_subject_bench_v1`：18 × 5 折 × 2 split | **180** | **~227** | ~384 |
+| `shu_cross_subject_bench_v1`：18 × 5 折 × 2 split | **180** | **~83** | ~85 |
+| **合计** | **360** | **~310** | ~469 |
+
+4 卡并行（QOS `gres/gpu=4` 硬上限）→ 墙钟约 **77 小时 ≈ 3.2 天**（原估 4.9 天）。
+
+**偏差 −34%，在验收阈值（±50%）内且方向有利，因此不重新排产，P2 按原方案提交。**
+偏差几乎全部来自 2C：原估算把 ATCNet 族和 DINO 族也按 4.5× 缩放，
+而它们实际只有 2.5×。SHU 侧 83 vs 85 h 几乎不变（那本来就是实测）。
+
+3 个 DINO 变体仍占约 **算力的 75%**（14.5 of 19.4 h/cell），不裁剪 —— 它们是 Claim B
+的重要论据（67M 参数换来垫底表现）。
+
+**融合方向 B 的额外发现**：`atcnet_s4` 是 **11.6 s/epoch**，而 `atcnet` 是 56.5 —— 
+**快 4.9×**，同时参数少 4.12×（27,834 vs 114,554）。这是论文里可以直接用的
+效率论据，原估算（~2.8 h/cell，即比 ATCNet 略贵）方向就是反的。
 
 ### 7.1 4090 集群配置（决定 21，已核实）
 
@@ -679,19 +703,29 @@ sbatch -J bench_smoke scripts/slurm/bench_gpu.sbatch \
   --ckpt-dir checkpoints/wbci_shu/wbci_2c_bench_smoke
 ```
 
-**验收清单**（全过才进 P2）：
+**验收清单**（全过才进 P2）—— **2026-08-27 全部通过**：
 
-1. 10 个 cell 全 `ok`，无异常
-2. `n_params` 全部非 0，且组 2/3 的实测参数量与 §5.2/§5.3 一致
-   （`s4erp_dw@f64d2` = 426,370；`atcnet_s4` = 27,834）
-3. per-trial 文件写出，Kappa 出现在指标里
-4. `splits/*.json` 里 6:2:2 与 `split_seeds` 正确、测试被试与训练/验证零交集
-5. `timepatch` 的 `bin_assignments` 覆盖全部 6 个箱（不能全挤在最后一个）
-6. `atcnet_s4` 的 `log_dt` 初始化后时间常数落在 **0.27–16.9 tokens**（Tc=17），**不是 6.8–555**
-7. `dualcd_transformer` 显存峰值确认 `micro_batch=16` 够用
-8. **实测单 epoch 耗时替换 §7 的全部估算**；若与估算差 >50%，先报告修正预算再排产
+| # | 项 | 结果 |
+|:--|:---|:---|
+| 1 | 全部 cell `ok`，无异常 | ✅ **20/20**（10 条目 × 2 split × fold 0），`failures.json` 为空 |
+| 2 | `n_params` 全部非 0，且与 §5.2/§5.3 一致 | ✅ `s4erp_dw@f64d2` = 426,370；`atcnet_s4` = **27,834**；`@noattn` = 25,642 |
+| 3 | per-trial 文件写出，Kappa 在指标里 | ✅ 20/20 有 `predictions.npz`，`probs_best` 形状对齐；`cohen_kappa` 在每行 |
+| 4 | 6:2:2 与 `split_seeds` 正确、测试被试零交集 | ✅ 每 cell val=10 被试，train/val 与 test 交集为空 |
+| 5 | `timepatch` 的 6 个箱都非空 | ✅ 每箱 patch 数 = 57 / 62 / 63 / 62 / 125 / 118 |
+| 6 | `atcnet_s4` 时间常数落在 Tc 量级 | ✅ **τ ∈ [0.27, 16.89] tokens**，Tc=17；readout `[12..16]` |
+| 7 | `dualcd_transformer` 显存够用 | ✅ `micro_batch=16 × accum=8 → 128`，MaxRSS 9.25 G / 申请 40 G，无 OOM |
+| 8 | 实测耗时替换 §7 估算，差 >50% 需重排产 | ✅ 见 §7 重算：**310 vs 469 GPU-h（−34%）**，阈值内且方向有利，不重排产 |
 
-### P2 — 全量统一 run（4 卡，约 4.9 天）
+**smoke 过程中抓到并修掉的两个 bug**（正是 smoke 存在的理由）：
+
+| bug | 症状 | 修复 |
+|:---|:---|:---|
+| cell 目录未创建 | `np.savez_compressed` 不建父目录，训练成功后**每个 cell** 都在写 `predictions.npz` 时 `FileNotFoundError` | `run_cell` 开头 `mkdir(parents=True)`（`98f4b33`） |
+| `timescales()` 张量不带 device | `torch.arange` 建在 CPU，而 `log_dt` 在 cuda；`describe()` 每次存 best checkpoint 都调用 → **fusion B 4/4 cell 训练后崩溃** | 传 `device=dt.device`；补 GPU 门控的全名册 `forward + loss + describe()` 回归测试（`2f606b0`） |
+
+第二个 bug 在 CPU 上**原理上不可见**（两个操作数都在 CPU），这是 CPU plumbing 跑通、GPU 仍然全挂的原因。
+
+### P2 — 全量统一 run（4 卡，约 3.2 天）
 
 | run_id | 内容 |
 |:---|:---|
