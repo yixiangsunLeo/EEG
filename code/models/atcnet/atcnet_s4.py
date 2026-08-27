@@ -294,7 +294,7 @@ class ATCNetS4(nn.Module):
         taus: List[float] = []
         for block in self.s4:
             dt = torch.exp(block.s4.log_dt).detach()
-            n = torch.arange(1, block.s4.state_dim + 1, dtype=dt.dtype)
+            n = torch.arange(1, block.s4.state_dim + 1, dtype=dt.dtype, device=dt.device)
             taus += (1.0 / (n[None, :] * dt[:, None])).flatten().tolist()
         return {"tau_min_tokens": float(min(taus)), "tau_max_tokens": float(max(taus)),
                 "Tc": float(self.Tc)}

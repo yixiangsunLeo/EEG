@@ -323,6 +323,28 @@ def test_every_roster_entry_forward_pass(dims):
         assert torch.isfinite(logits).all(), name
 
 
+@pytest.mark.slow
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="needs a GPU")
+def test_every_roster_entry_runs_on_gpu():
+    """Forward, loss, and ``describe()`` on cuda, for the whole roster.
+
+    ``describe()`` is diagnostics, but the trainer calls it on every best-checkpoint
+    save, so a tensor built without ``device=`` there kills the cell after training.
+    A CPU-only run cannot see it: both operands are on the CPU. This is what took out
+    all four ``atcnet_s4`` cells of smoke 47237.
+    """
+    dev = torch.device("cuda")
+    params = resolve_all(BENCHMARK_MODEL_NAMES, dataset="wbci_shu_2c")
+    x = torch.randn(2, DIMS_58["n_channels"], DIMS_58["n_times"], device=dev)
+    y = torch.tensor([0, 1], device=dev)
+    for name in BENCHMARK_MODEL_NAMES:
+        m = build_model(name, params=params[name], **DIMS_58).to(dev).train()
+        loss, _ = m.training_step(x, y, epoch=0)
+        assert torch.isfinite(loss), name
+        desc = m.describe() if hasattr(m, "describe") else {}
+        assert desc.get("n_params", 0) > 0, name
+
+
 # --------------------------------------------------------------------------- #
 # Signature guard
 # --------------------------------------------------------------------------- #
