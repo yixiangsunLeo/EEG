@@ -171,7 +171,7 @@ def main() -> None:
     if not cells_dir.is_dir():
         raise SystemExit(f"no cells/ under {run_dir}")
 
-    want_models = _parse_list(args.models)
+    want_models = {m.replace("@", "-") for m in _parse_list(args.models)} if args.models else None
     want_folds = {int(f) for f in _parse_list(args.folds)} if args.folds else None
     fig_dir = run_dir / "figures"
 
@@ -187,7 +187,7 @@ def main() -> None:
             unparsed += 1
             continue
         model, unit = parts["model"], parts["unit"]
-        if want_models and model not in want_models:
+        if want_models and model.replace("@", "-") not in want_models:
             continue
         if want_folds is not None and (parts["fold"] is None
                                        or int(parts["fold"]) not in want_folds):

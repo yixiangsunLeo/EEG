@@ -307,6 +307,23 @@ def train_end_to_end(
         if logger is not None:
             logger.info("resume: %s at epoch %d (best %s=%.4f @ epoch %d)",
                         ckpt_dir, start_epoch, spec.monitor, best_score, best_epoch)
+        # A wall-clock kill after last.pt but before result.json would otherwise train
+        # one more epoch and, if that epoch's val improved, reset patience for 25 more.
+        if bool(ck.get("early_stopped")) or (
+            spec.early_stopping_patience and spec.early_stopping_patience > 0
+            and best_epoch > 0
+            and (start_epoch - best_epoch) >= int(spec.early_stopping_patience)
+        ):
+            if logger is not None:
+                logger.info("resume: already early-stopped at epoch %d, not training further",
+                            start_epoch)
+            return {
+                "best_epoch": best_epoch, "best_score": best_score, "monitor": spec.monitor,
+                "epochs_run": start_epoch, "resumed_from_epoch": resumed_from,
+                "early_stopped": True, "history": history,
+                "final_val": (history[-1].get("val") if history else None),
+                "train_seconds": 0.0, "lr": lr,
+            }
 
     if start_epoch >= int(spec.max_epochs):
         if logger is not None:
@@ -342,6 +359,8 @@ def train_end_to_end(
         accum = spec.accum_steps
         opt.zero_grad(set_to_none=True)
         pending = 0
+        pending_x: List = []
+        pending_y: List = []
 
         for step, batch in enumerate(train_loader, start=1):
             xb = batch[0].to(device, non_blocking=True)
@@ -360,12 +379,27 @@ def train_end_to_end(
             else:
                 scaled.backward()
             pending += 1
+            if callable(after_step):
+                pending_x.append(xb)
+                pending_y.append(yb)
 
             # Step on a full accumulation group, or on the epoch's ragged last group.
             if pending == accum or step == len(train_loader):
+                unscaled = False
+                if accum > 1 and pending != accum:
+                    # Losses were divided by `accum` but only `pending` micro-batches
+                    # contributed; rescale so the leftover group is not a shrunk step.
+                    if scaler.is_enabled():
+                        scaler.unscale_(opt)
+                        unscaled = True
+                    scale = accum / pending
+                    for p in model.parameters():
+                        if p.grad is not None:
+                            p.grad.mul_(scale)
                 if scaler.is_enabled():
                     if spec.grad_clip_norm and spec.grad_clip_norm > 0:
-                        scaler.unscale_(opt)
+                        if not unscaled:
+                            scaler.unscale_(opt)
                         nn.utils.clip_grad_norm_(model.parameters(), spec.grad_clip_norm)
                     scaler.step(opt)
                     scaler.update()
@@ -374,9 +408,13 @@ def train_end_to_end(
                         nn.utils.clip_grad_norm_(model.parameters(), spec.grad_clip_norm)
                     opt.step()
                 opt.zero_grad(set_to_none=True)
-                pending = 0
                 if callable(after_step):
-                    after_step(xb, yb)
+                    # Prototypes / teacher EMA must see the grouped batch, not the last
+                    # micro-batch (otherwise DualCD trains at 16/32 while the recipe is 128).
+                    after_step(torch.cat(pending_x, dim=0), torch.cat(pending_y, dim=0))
+                    pending_x.clear()
+                    pending_y.clear()
+                pending = 0
 
             bs = int(yb.size(0))
             tot_loss += float(loss.detach().item()) * bs
@@ -424,6 +462,14 @@ def train_end_to_end(
         else:
             patience += 1
 
+        will_stop = bool(
+            val_loader is not None and spec.early_stopping_patience
+            and spec.early_stopping_patience > 0
+            and patience >= int(spec.early_stopping_patience)
+        )
+        if will_stop:
+            early_stopped = True
+
         if ckpt_dir is not None:
             _atomic_save({
                 "model_state": _cpu_state(model),
@@ -431,6 +477,7 @@ def train_end_to_end(
                 "scheduler_state": (sched.state_dict() if sched is not None else None),
                 "scaler_state": (scaler.state_dict() if scaler.is_enabled() else None),
                 "epoch": epoch, "best_score": best_score, "best_epoch": best_epoch,
+                "early_stopped": early_stopped,
                 "monitor": spec.monitor, "history": history, "rng_state": _rng_state(),
                 "spec": asdict(spec), "run_signature": run_signature,
                 "model_desc": (model.describe() if hasattr(model, "describe") else None),
@@ -454,10 +501,7 @@ def train_end_to_end(
                         epoch, spec.max_epochs, train_loss, extra, vtxt, patience,
                         row["epoch_seconds"])
 
-        if (val_loader is not None and spec.early_stopping_patience
-                and spec.early_stopping_patience > 0
-                and patience >= int(spec.early_stopping_patience)):
-            early_stopped = True
+        if early_stopped:
             if logger is not None:
                 logger.info("early stop at epoch %d (best %s=%.4f @ epoch %d)",
                             epoch, spec.monitor, best_score, best_epoch)

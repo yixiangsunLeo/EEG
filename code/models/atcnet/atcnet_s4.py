@@ -30,13 +30,13 @@ differ, which is what keeps the ensemble diverse), and each readout's receptive 
 unbounded rather than clipped at 13 steps. The five independent ``Linear`` heads are kept —
 they are 330 parameters and they are where the ensemble actually lives.
 
-Budget at 58 channels / 2 classes::
+Budget at 58 channels / 2 classes (measured after the FFN mixer)::
 
     ConvBlock                     19,424   (unchanged)
     shared MHA (optional)          ~2,200   was 10,960 for 5 independent blocks
-    shared SSM (2 layers)          ~1,600   was 83,840 for 5 independent TCNs
+    shared SSM + FFN (2 layers)    ~6,000   was 83,840 for 5 independent TCNs
     5 x Linear(32, 2)                 330   (unchanged)
-    total                         ~23,600   vs ATCNet's 114,554  ->  ~4.9x smaller
+    total                         ~28,000   vs ATCNet's 114,554  ->  ~4x smaller
 
 The SSM is the project's ``S4Block``. Note that implementation is a **diagonal** SSM (it
 keeps only ``diag(A)`` of the HiPPO-LegS matrix), not the DPLR construction of Gu et al.
@@ -51,9 +51,17 @@ from typing import Dict, List, Optional
 
 import torch
 import torch.nn as nn
+from torch.nn.utils.parametrize import register_parametrization
 
 from ..eeg_foundation.s4_layers import S4Block
-from .atcnet_torch import _ConvBlock, _KerasMHA
+from .atcnet_torch import (
+    CONV_MAX_NORM,
+    CONV_WEIGHT_DECAY,
+    DENSE_WEIGHT_DECAY,
+    _ConvBlock,
+    _KerasMHA,
+    _MaxNormKernel,
+)
 
 
 def reinit_log_dt_for_length(s4_layer: nn.Module, seq_len: int) -> None:
@@ -142,8 +150,13 @@ class ATCNetS4(nn.Module):
         independent, unmasked ones). ``None`` drops it, which makes the comparison against
         ``atcnet@noattn`` a single-variable test of "5 independent TCNs vs 1 shared SSM".
     s4_layers, s4_state_dim, s4_d_ff, s4_dropout
-        The shared SSM stack. ``s4_d_ff=None`` (default) omits the feed-forward sub-layer,
-        keeping the block at ~768 parameters.
+        The shared SSM stack. ``s4_d_ff=32`` is a pointwise channel mixer: a diagonal
+        SSM is SISO per feature, while ATCNet's ``Conv1d(32, 32)`` mixes channels.
+        ``None`` drops the mixer and makes the ``@noattn`` pair a two-variable change.
+    use_official_l2 : bool
+        Apply ATCNet's ``L2`` kernel penalties (see ``l2_penalty``). Default True, and it
+        matters: dropping it would make the comparison against ``atcnet`` a two-variable
+        change (temporal stage *and* regularization).
     """
 
     def __init__(
@@ -160,11 +173,13 @@ class ATCNetS4(nn.Module):
         attention: Optional[str] = "mha",
         s4_layers: int = 2,
         s4_state_dim: int = 8,
-        s4_d_ff: Optional[int] = None,
+        s4_d_ff: Optional[int] = 32,
         s4_dropout: float = 0.3,
         fuse: str = "average",
+        use_official_l2: bool = True,
     ):
         super().__init__()
+        self.use_official_l2 = bool(use_official_l2)
         if attention not in (None, "mha"):
             raise ValueError(f"attention must be 'mha' or None, got {attention!r}")
         if fuse not in ("average", "concat"):
@@ -197,6 +212,9 @@ class ATCNetS4(nn.Module):
         ])
         for block in self.s4:
             reinit_log_dt_for_length(block.s4, self.Tc)
+            # TCN kernels carry max_norm(0.6); B/C are the linear maps that replaced them.
+            register_parametrization(block.s4, "B", _MaxNormKernel(CONV_MAX_NORM))
+            register_parametrization(block.s4, "C", _MaxNormKernel(CONV_MAX_NORM))
 
         if fuse == "average":
             self.dense = nn.ModuleList(
@@ -231,6 +249,42 @@ class ATCNetS4(nn.Module):
             return (outs[0] if len(outs) == 1
                     else torch.stack(outs, dim=0).mean(dim=0))
         return self.dense[0](torch.cat(window_feats, dim=1))
+
+    def l2_penalty(self) -> torch.Tensor:
+        """ATCNet's ``L2`` kernel penalties, applied to the corresponding layers here.
+
+        **Not optional for a fair comparison.** Upstream ATCNet folds
+        ``L2(conv_weightDecay=0.009)`` over its conv kernels and ``L2(dense_weightDecay=0.5)``
+        over its classifier weights into the loss. At initialization that term measures
+        ~12.2 against a cross-entropy of ~0.69 — it is **17x the data term**, not a nudge.
+        A variant without it would differ from ``atcnet`` in two ways at once (temporal stage
+        *and* the dominant regularizer), and the ablation would be uninterpretable.
+
+        The mapping is layer-for-layer:
+
+        * conv block kernels -> ``0.009``. Identical module to ATCNet's, identical treatment.
+        * dense head weights -> ``0.5``. Identical modules (``n_windows`` x ``Linear``).
+        * SSM ``B``/``C`` -> ``0.009``, standing in for the TCN conv kernels they replace.
+          ``A_log`` / ``A_sign`` / ``log_dt`` / ``D`` are deliberately **excluded**:
+          the first three parameterize the state dynamics (decay rates and timestep),
+          not a linear map — shrinking ``log_dt`` toward 0 would push ``dt`` toward 1
+          and destroy the timescale calibration that ``reinit_log_dt_for_length`` exists
+          to set. ``D`` is the SSM skip (initialized at 1). At init the convolution
+          kernel is ~1e-4, so ``D`` is the only live temporal path; penalizing it would
+          drive the skip to 0 and collapse the stage to (near) identity. ATCNet's TCN
+          residual is an unscaled add, which has no analogue of a penalized skip gain.
+        * the attention block is excluded, matching upstream (only conv + dense are penalized).
+        """
+        conv_term = sum((w ** 2).sum() for w in self.conv_block.conv_kernels())
+        for block in self.s4:
+            conv_term = conv_term + (block.s4.B ** 2).sum() + (block.s4.C ** 2).sum()
+            if block.has_ffn:
+                conv_term = conv_term + sum(
+                    (mod.weight ** 2).sum()
+                    for mod in block.ffn.modules() if isinstance(mod, nn.Linear)
+                )
+        dense_term = sum((lin.weight ** 2).sum() for lin in self.dense)
+        return CONV_WEIGHT_DECAY * conv_term + DENSE_WEIGHT_DECAY * dense_term
 
     def timescales(self) -> Dict[str, float]:
         """Min/max SSM time constants in tokens — the P1 smoke check for ``log_dt``.

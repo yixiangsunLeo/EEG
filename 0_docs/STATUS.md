@@ -20,8 +20,8 @@ status: "active"
 >   2C 与 3C 是**互斥队列**（subjects 1–51 vs 52–62），不是子集。
 > * **两个融合模型已实现并通过测试**：`s4erp_dw@{f64d2,f16d8,f16d2p}`（方向 A，
 >   学长指定的 ATCNet depthwise 空间前端）与 `atcnet_s4`（方向 B，共享因果 SSM）。
-> * **17 个条目一次提交**，约 452 GPU-h ≈ 4.7 天（4 卡）。
-> * `pytest tests/ -q` → **134 passed**。**尚未 git commit**（需用户授权）。
+> * **18 个条目一次提交**（含 `atcnet_s4@noattn` 单变量对照），约 469 GPU-h ≈ 4.9 天（4 卡）。
+> * `pytest tests/models/test_fusion_and_specs.py -q -m "not slow"` 审查后通过。
 > * 复现入口：[`REPRODUCE.md`](../REPRODUCE.md)。
 
 > [!IMPORTANT]

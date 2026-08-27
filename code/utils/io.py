@@ -7,18 +7,53 @@
 from __future__ import annotations
 
 import json
+import math
+import os
+import tempfile
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
 import numpy as np
 
 
+def _sanitize_for_json(obj: Any) -> Any:
+    """Replace non-finite floats with ``None`` so the file is strict JSON.
+
+    ``json.dump``'s default ``allow_nan=True`` writes the token ``NaN``, which is not
+    valid JSON. Cohen's kappa is NaN on a degenerate all-one-class fold; leaving it as
+    a Python nan would make ``json.load`` fail for any strict consumer.
+    """
+    if isinstance(obj, dict):
+        return {k: _sanitize_for_json(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_sanitize_for_json(v) for v in obj]
+    if isinstance(obj, (float, np.floating)):
+        val = float(obj)
+        return val if math.isfinite(val) else None
+    return obj
+
+
 def save_json(obj: Dict[str, Any], path: str | Path) -> None:
-    """写 JSON（utf-8，缩进，支持中文，numpy 标量自动转原生类型）。"""
+    """写 JSON（utf-8，缩进，支持中文，numpy 标量自动转原生类型）。
+
+    Write is atomic (tempfile + ``os.replace``) so a concurrent reader never sees a
+    partial file. Non-finite floats become JSON ``null``.
+    """
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(obj, f, ensure_ascii=False, indent=2, default=_json_default)
+    payload = _sanitize_for_json(obj)
+    fd, tmp = tempfile.mkstemp(prefix=path.name + ".", suffix=".tmp", dir=path.parent)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False, indent=2,
+                      default=_json_default, allow_nan=False)
+        os.replace(tmp, path)
+    except Exception:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
 
 
 def load_json(path: str | Path) -> Dict[str, Any]:
@@ -31,9 +66,10 @@ def _json_default(o: Any):
     if isinstance(o, (np.integer,)):
         return int(o)
     if isinstance(o, (np.floating,)):
-        return float(o)
+        val = float(o)
+        return val if math.isfinite(val) else None
     if isinstance(o, np.ndarray):
-        return o.tolist()
+        return _sanitize_for_json(o.tolist())
     if isinstance(o, Path):
         return str(o)
     raise TypeError(f"not JSON serializable: {type(o)}")

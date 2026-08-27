@@ -51,7 +51,7 @@ models: [
   # ---- group 2: fusion direction A (advisor-specified main line) ----
   "s4erp_dw@f64d2", "s4erp_dw@f16d8", "s4erp_dw@f16d2p",
   # ---- group 3: fusion direction B ----
-  "atcnet_s4",
+  "atcnet_s4", "atcnet_s4@noattn",
   # ---- group 4: ATCNet explanatory ablations ----
   "atcnet@tcn8", "atcnet@nwin1", "atcnet@noattn",
 ]

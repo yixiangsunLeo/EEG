@@ -1,5 +1,5 @@
 #!/bin/bash
-# Submit the cross-subject benchmark: 17 model entries split over 4 GPUs, each GPU's work
+# Submit the cross-subject benchmark: 18 model entries split over 4 GPUs, each GPU's work
 # chained across several jobs so it can exceed the 48 h wall clock.
 #
 #   bash scripts/slurm/submit_bench.sh wbci_2c        # WBCIC-SHU 2C (51 subjects)
@@ -47,7 +47,7 @@ GROUP_MODELS=(
   "dualcd_transformer"                                                              # ~100 h
   "dualcd_s4_flatten"                                                               #  ~77 h
   "dualcd_s4_timepatch,atcnet"                                                      #  ~90 h
-  "eegnet_official,eegnex,eeg_deformer,deepconvnet,fbcnet,s4erp,s4erp_dw@f64d2,s4erp_dw@f16d8,s4erp_dw@f16d2p,atcnet_s4,atcnet@tcn8,atcnet@nwin1,atcnet@noattn"  # ~120 h
+  "eegnet_official,eegnex,eeg_deformer,deepconvnet,fbcnet,s4erp,s4erp_dw@f64d2,s4erp_dw@f16d8,s4erp_dw@f16d2p,atcnet_s4,atcnet_s4@noattn,atcnet@tcn8,atcnet@nwin1,atcnet@noattn"  # ~122 h
 )
 
 mkdir -p logs/slurm outputs/experiments

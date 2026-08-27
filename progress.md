@@ -7,6 +7,60 @@ Format per entry: date, what was done, decisions made, open questions, next step
 
 ---
 
+## 2026-08-27 — 第二轮审查：融合 B 通道混合 + DualCD 累积/早停续跑
+
+多智能体：[Fusion architecture](a0139f5c-b4bd-4cf9-a6f2-da1945032804)、
+[P0 protocol](a3cfe454-3980-462d-b683-e6e5e6e2dfda)、
+[Statistics](41eb6282-66fd-4aeb-9641-431e0212b2e3)。
+
+**融合（第一性原理）：** 方向 A 保持单变量 depthwise，不改。方向 B 补上两处对照缺口：
+`s4_d_ff=32`（对角 SSM 是 SISO，TCN Conv1d 混通道；无 FFN 时 `@noattn` 是双变量）+
+SSM `B`/`C` 的 `max_norm(0.6)`（对应 TCN kernel constraint）。参数 23,482 → **27,834**
+（仍比 ATCNet 小 4.12 倍）。双 dropout 与 TCN depth=2 的 4 次 dropout **计数对齐，不改**。
+
+**训练路径（会毁掉 DualCD 对照）：** 累积的 `after_optimizer_step` 改为拼接后的 grouped
+batch；ragged 末组梯度按 `pending` 重标；`last.pt` 写入 `early_stopped`，续跑若已达
+patience 不再多训一轮。
+
+**统计：** Holm 按预注册家族大小 8 校正；Friedman 丢掉不完整的**模型列**而不是被试；
+`--models atcnet@tcn8` 能对上 `atcnet-tcn8` 目录。
+
+U1/U2 已从计划划掉。提前交的 smoke **47227 已取消**，本轮修完再交。
+
+---
+
+## 2026-08-27 — P0 代码审查修订（三路审查，两路被额度截断后由主会话落地）
+
+审查专家：[Fusion architecture](fbc6398f-7de5-485a-b184-a80e9f842a48)、
+[Code correctness](c32fe936-5eda-4250-bb1c-48517c7c04ec)、
+[Statistics](7c59a832-7f72-42a1-a73c-1726853ac8b0)。后两路因额度中断，发现从
+transcript 打捞并逐条核实。
+
+**已改（进 smoke 前必须落地）：**
+
+1. 名册补 `atcnet_s4@noattn` → **18 条目**。它已在 `PREREGISTERED_COMPARISONS` 和
+   §5.3/§5.4 里，漏掉会使 Holm 家族静默从 8 缩到 7。成本约 +17 GPU-h。
+2. `atcnet_s4` L2 **不再罚 SSM skip `D`**（init=1，核 ~1e-4，罚它等于把时间阶段压成恒等）。
+   `B`/`C` 仍按 0.009 对应 TCN conv；`A_log`/`A_sign`/`log_dt` 继续排除。
+3. Friedman / Wilcoxon 的"更好"方向随 `--metric` 翻转（nll/brier/ece 是越小越好）。
+4. Wilcoxon 强制 `method="approx"`，避免 n=25 用 exact、n=51 用 normal、一个 tie 就换检验。
+   配对 Δ 补 95% t 区间。
+5. 未定义别名一律抛错（即使 experiment `model_params` 非空也不再静默跑成 plain 模型）。
+6. `resolved_model_params.json` 按 `--tag-suffix` 落盘，4 个并发 group 不再互相覆盖。
+7. `save_json` 原子写 + 非有限浮点 → JSON `null`（退化折的 NaN kappa 不再写出非法 JSON）。
+8. `predictions.npz` 的 subject/session 从 `<U16` 升到 `<U32`。
+
+**故意不改：**
+
+- `S4Block` 双重 dropout（`S4Layer` + block）：改了会动 S4ERP 基线，与学长包分叉。
+- `atcnet_s4` 不加最终 LayerNorm：ATCNet 的 TCN 没有，加了就不是单变量。
+- `log_dt` 短端 `[1/L, N/L]` 保持：~58% 模式 τ<2 是覆盖 1..L 的几何后果，不是 bug。
+- U1 源被试筛选 / U2 Euclidean Alignment：**按用户指示不做**。
+
+**下一步：** `pytest tests/models tests/ -q` 通过后交 P1 smoke（10 条目 × fold 0 × 5 epoch）。
+
+---
+
 ## 2026-08-27 — 新主线：跨被试 benchmark + ATCNet×S4ERP 融合。**P0 工程阶段完成**
 
 权威计划 = `docs/PLAN_cross_subject_benchmark_and_fusion.md`（27 条锁定决定）。
@@ -40,8 +94,8 @@ Format per entry: date, what was done, decisions made, open questions, next step
 两个数据集、都是 `kfold_subject`、都 6:2:2、`split_seeds: [41,42]`、`train.seeds: [0]`：
 WBCIC-2C 5 折（30/31 : 10 : 10/11）+ SHU 5 折（15:5:5 精确）。
 配方 = 已跑过那套（Adam 1e-4 / batch 128 / 无 scheduler / max 500 / **patience 25** /
-`monitor: macro_f1`）。**17 个条目一次提交**（原计划分阶段已推翻，见计划 §0 决定 25），
-约 **452 GPU-h ≈ 4.7 天**（4 卡）。
+`monitor: macro_f1`）。**18 个条目一次提交**（原计划分阶段已推翻，见计划 §0 决定 25；
+审查补入 `atcnet_s4@noattn`），约 **469 GPU-h ≈ 4.9 天**（4 卡）。
 
 ### 两个融合方向都实现了（实测参数量，58ch/2 类）
 
@@ -86,7 +140,7 @@ P0-1 原文是"**删**"5 个模型（`eegnet`/`cap_eegnet`/`s4erp_adv`/`atcnet_a
 
 ### 下一步
 
-**P1 smoke**（1 卡约 3 小时，9 个条目 × fold 0 × 5 epoch），验收清单与检查脚本见
+**P1 smoke**（1 卡约 3 小时，10 个条目 × fold 0 × 5 epoch），验收清单与检查脚本见
 `REPRODUCE.md` §4；三条硬门：参数量全非 0、`timepatch` 分箱覆盖 6 个箱、
 `atcnet_s4` 时间常数在 1–17 tokens。通过后再 `submit_bench.sh`。
 

@@ -657,7 +657,8 @@ def run_foundation_cross_subject(cfg: Dict, cfg_path: Path, args: argparse.Names
         out_cfg.get("output_dir", f"outputs/experiments/{dataset}/{run_id}"))
     runs_dir = out_dir / "runs"
     runs_dir.mkdir(parents=True, exist_ok=True)
-    save_config(cfg, out_dir / "resolved_config.yaml")
+    suffix = f"__{args.tag_suffix}" if args.tag_suffix else ""
+    save_config(cfg, out_dir / f"resolved_config{suffix}.yaml")
     ckpt_root = None
     if not args.no_save_ckpt:
         ckpt_root = _abs(args.ckpt_dir or out_cfg.get("checkpoint_dir",
@@ -680,11 +681,13 @@ def run_foundation_cross_subject(cfg: Dict, cfg_path: Path, args: argparse.Names
     # + variants); the experiment's `model_params` block is an explicit override on top.
     # Resolving here — once, before any training — means the exact dict handed to every cell
     # is also the dict written to `resolved_model_params.json` for the record.
+    # Concurrent Slurm groups share `out_dir`; suffix the file so they cannot overwrite
+    # each other's (partial) resolved dict. `failures.json` already does the same.
     model_params_all = resolve_all(
         models, dataset=dataset,
         experiment_params_all=cfg.get("model_params", {}) or {},
     )
-    save_json(model_params_all, out_dir / "resolved_model_params.json")
+    save_json(model_params_all, out_dir / f"resolved_model_params{suffix}.json")
 
     res = run_cross_subject(
         records, dataset=dataset, models=models,
@@ -704,7 +707,6 @@ def run_foundation_cross_subject(cfg: Dict, cfg_path: Path, args: argparse.Names
         resume=resume, logger=logger,
     )
 
-    suffix = f"__{args.tag_suffix}" if args.tag_suffix else ""
     for model_name in models:
         rows = [r for r in res["rows"] if r.get("model") == model_name]
         if rows:

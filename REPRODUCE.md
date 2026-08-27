@@ -16,7 +16,7 @@ The design rationale is in [`docs/PLAN_cross_subject_benchmark_and_fusion.md`](d
 
 ## 1. What is being reproduced
 
-**17 model entries x 2 datasets x 5 folds x 2 subject-partition seeds = 340 cells.**
+**18 model entries x 2 datasets x 5 folds x 2 subject-partition seeds = 360 cells.**
 
 | group | entries | what it is |
 |:---|:---|:---|
@@ -83,7 +83,7 @@ costs 5 days.
 sbatch -J bench_smoke scripts/slurm/bench_gpu.sbatch \
   code/configs/experiments/wbci_2c_cross_subject_bench.yaml \
   --folds-subset 0 \
-  --models eegnet_official,atcnet,s4erp,dualcd_transformer,dualcd_s4_timepatch,s4erp_dw@f64d2,s4erp_dw@f16d2p,atcnet_s4,atcnet@tcn8 \
+  --models eegnet_official,atcnet,s4erp,dualcd_transformer,dualcd_s4_timepatch,s4erp_dw@f64d2,s4erp_dw@f16d2p,atcnet_s4,atcnet_s4@noattn,atcnet@tcn8 \
   --max-epochs 5 \
   --out outputs/experiments/wbci_shu/wbci_2c_bench_smoke \
   --ckpt-dir checkpoints/wbci_shu/wbci_2c_bench_smoke
@@ -113,9 +113,11 @@ for c in cells:
     assert p["probs_best"].shape == (n, d["data_dims"]["n_classes"])
     assert set(np.unique(p["session"])) <= {"ses-01", "ses-02", "ses-03"}
     # 6. atcnet_s4's SSM timescales rescaled for Tc=17, NOT the 6.8-546 default
-    if d["model"] == "atcnet_s4":
+    if d["model"] in ("atcnet_s4", "atcnet_s4@noattn"):
         assert desc["tau_max_tokens"] <= desc["Tc"] * 1.5, desc
         assert desc["readout_idx"] == [12, 13, 14, 15, 16], desc
+        if d["model"] == "atcnet_s4@noattn":
+            assert desc.get("attention") in (None, "null", "None") or not desc.get("attention")
 print(f"all {len(cells)} smoke cells pass")
 PY
 ```
@@ -135,11 +137,11 @@ for m, v in sorted(a.items(), key=lambda kv: -sum(kv[1])):
 "
 ```
 
-## 5. Full sweep (about 4.7 days, 4 GPUs)
+## 5. Full sweep (about 4.9 days, 4 GPUs)
 
 ```bash
-bash scripts/slurm/submit_bench.sh wbci_2c      # 170 cells, ~370 GPU-h
-bash scripts/slurm/submit_bench.sh shu          # 170 cells, ~82 GPU-h
+bash scripts/slurm/submit_bench.sh wbci_2c      # 180 cells, ~384 GPU-h
+bash scripts/slurm/submit_bench.sh shu          # 180 cells, ~85 GPU-h
 ```
 
 Each dataset is split into 4 groups (one GPU each, the QOS limit) and each group is chained
@@ -153,7 +155,7 @@ squeue -u $USER -o '%.10i %.14j %.2t %.11M %.11L %R'
 tail -f logs/slurm/b2c_g4_1-*.out
 
 # progress
-find outputs/experiments/wbci_shu/wbci_2c_cross_subject_bench_v1/cells -name result.json | wc -l   # -> 170
+find outputs/experiments/wbci_shu/wbci_2c_cross_subject_bench_v1/cells -name result.json | wc -l   # -> 180
 
 # if gpu2node is full and a job sits PENDING (Resources)
 scontrol update jobid=<id> partition=gpu3node
@@ -179,7 +181,9 @@ Three things to read carefully:
   against the complete rows. (A 7-of-11-fold row once made a model look competitive; see
   `docs/RESULTS_TRUTH.md` §8.)
 * **`paired_tests.csv`** — the pre-registered comparisons, Holm-corrected, with Cohen's
-  `d_z`. A significant p-value with `|d_z| < 0.2` is a small effect however small the p.
+  `d_z` and a 95% t-interval on the paired Δ. A significant p-value with `|d_z| < 0.2`
+  is a small effect however small the p. Wilcoxon uses `method="approx"` on both
+  datasets so n=25 and n=51 are the same test.
 * **`variant_selection.csv`** — the `s4erp_dw` representative is chosen on **validation**
   macro-F1. If validation and test rankings disagree, that is the mechanism working, not a
   problem.

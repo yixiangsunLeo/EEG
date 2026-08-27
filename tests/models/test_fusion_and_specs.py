@@ -56,11 +56,18 @@ def test_undefined_alias_raises_rather_than_running_the_plain_model():
         resolve_model_params("atcnet@tcn9")
 
 
+def test_undefined_alias_raises_even_when_experiment_overrides_are_present():
+    """A leftover model_params block used to skip the 'not defined' check."""
+    with pytest.raises(ValueError, match="not defined"):
+        resolve_model_params("atcnet@tcn88", experiment_params={"tcn_filters": 8})
+
+
 # --------------------------------------------------------------------------- #
 # Parameter resolution: single source of truth
 # --------------------------------------------------------------------------- #
 def test_variants_declared_in_yaml():
     assert set(variant_names("atcnet")) == {"tcn8", "nwin1", "noattn"}
+    assert set(variant_names("atcnet_s4")) == {"noattn"}
     assert set(variant_names("s4erp_dw")) == {"f64d2", "f16d8", "f16d2p"}
 
 
@@ -95,7 +102,20 @@ def test_experiment_params_override_yaml():
 def test_resolve_all_covers_the_whole_roster():
     res = resolve_all(BENCHMARK_MODEL_NAMES, dataset="wbci_shu_2c")
     assert set(res) == set(BENCHMARK_MODEL_NAMES)
-    assert len(BENCHMARK_MODEL_NAMES) == 17
+    assert len(BENCHMARK_MODEL_NAMES) == 18
+    assert "atcnet_s4@noattn" in BENCHMARK_MODEL_NAMES
+
+
+def test_experiment_yamls_match_the_canonical_roster():
+    """A yaml that silently drops an entry would un-pair the Holm family."""
+    import yaml
+
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[2] / "code" / "configs" / "experiments"
+    for name in ("wbci_2c_cross_subject_bench.yaml", "shu_cross_subject_bench.yaml"):
+        models = yaml.safe_load((root / name).read_text())["models"]
+        assert models == BENCHMARK_MODEL_NAMES, name
 
 
 # --------------------------------------------------------------------------- #
@@ -194,8 +214,8 @@ def test_atcnet_s4_is_much_smaller_than_atcnet():
     na = a.describe()["n_params"]
     nb = b.describe()["n_params"]
     assert na == 114_554
-    assert nb == 23_482
-    assert na / nb > 4.5
+    assert nb == 27_834
+    assert na / nb > 4.0
 
 
 def test_atcnet_s4_attention_is_causal():
@@ -215,9 +235,65 @@ def test_atcnet_s4_attention_is_causal():
 
 
 def test_atcnet_s4_noattn_variant_drops_the_attention_block():
-    m = build_model("atcnet_s4", params=resolve_model_params("atcnet_s4@noattn"), **DIMS_58)
+    m = build_model("atcnet_s4@noattn",
+                    params=resolve_model_params("atcnet_s4@noattn"), **DIMS_58)
     assert m.model.attention_block is None
-    assert m.describe()["n_params"] == 21_290
+    assert m.describe()["n_params"] == 25_642
+
+
+def test_atcnet_and_atcnet_s4_carry_the_same_l2_scheme():
+    """Otherwise the ablation is a two-variable change and means nothing.
+
+    ATCNet folds L2(conv 0.009) + L2(dense 0.5) into the loss. Measured at initialization
+    that term is ~10-17x the cross-entropy — it dominates early training. A variant without
+    it would differ from ``atcnet`` in the temporal stage AND in the regularizer.
+    """
+    x, y = torch.randn(4, 58, 1000), torch.tensor([0, 1, 0, 1])
+    for name in ("atcnet", "atcnet_s4", "atcnet@noattn", "atcnet_s4@noattn"):
+        m = build_model(name, params=resolve_model_params(name), **DIMS_58).train()
+        assert m.uses_custom_loss, f"{name}: L2 penalty is not wired into the loss"
+        loss, parts = m.training_step(x, y, epoch=0)
+        assert set(parts) == {"ce", "l2"}, f"{name}: {parts}"
+        assert parts["l2"] > 0, name
+        assert torch.isfinite(loss), name
+
+
+def test_atcnet_s4_l2_excludes_the_ssm_dynamics_parameters():
+    """Dynamics and the skip must not be penalized.
+
+    ``log_dt``: shrinking it pushes dt toward 1 and destroys the timescale
+    calibration that ``reinit_log_dt_for_length`` sets up. ``D``: initialized at 1
+    while the SSM kernel is ~1e-4, so it is the only live temporal path; L2 on D
+    would collapse the stage. ``B``/``C`` stand in for the TCN conv kernels and
+    stay under the 0.009 penalty.
+    """
+    m = build_model("atcnet_s4", params=resolve_model_params("atcnet_s4"), **DIMS_58)
+    m.model.l2_penalty().backward()
+    for block in m.model.s4:
+        for pname in ("log_dt", "A_log", "A_sign", "D"):
+            g = getattr(block.s4, pname).grad
+            assert g is None or torch.all(g == 0), f"L2 reached {pname}"
+        # B/C are parametrized (max_norm); the leaf is `.parametrizations.*.original`.
+        for pname in ("B", "C"):
+            g = block.s4.parametrizations[pname].original.grad
+            assert g is not None and torch.any(g != 0), f"L2 did not reach {pname}"
+        if block.has_ffn:
+            assert block.ffn[0].weight.grad is not None
+
+
+def test_atcnet_s4_ssm_maps_carry_tcn_max_norm():
+    """ATCNet TCN kernels are max_norm(0.6); B/C stand in for those kernels."""
+    from code.models.atcnet.atcnet_torch import CONV_MAX_NORM
+
+    m = build_model("atcnet_s4", params=resolve_model_params("atcnet_s4"), **DIMS_58)
+    layer = m.model.s4[0].s4
+    with torch.no_grad():
+        layer.parametrizations.B.original.fill_(10.0)
+        layer.parametrizations.C.original.fill_(10.0)
+    b_norm = torch.linalg.vector_norm(layer.B, dim=1).max().item()
+    c_norm = torch.linalg.vector_norm(layer.C, dim=1).max().item()
+    assert b_norm <= CONV_MAX_NORM + 1e-5
+    assert c_norm <= CONV_MAX_NORM + 1e-5
 
 
 # --------------------------------------------------------------------------- #
@@ -310,6 +386,15 @@ def test_holm_is_monotone_and_conservative():
     assert np.all(adj <= 1.0)
 
 
+def test_holm_uses_the_pre_registered_family_size():
+    """A partial sweep must not make the remaining tests easier to call significant."""
+    from code.summaries.cross_subject_bench import _holm
+
+    p = [0.04]
+    assert _holm(p, n_family=1)[0] == 0.04
+    assert _holm(p, n_family=8)[0] == min(1.0, 0.32)
+
+
 def test_nemenyi_cd_shrinks_with_more_subjects():
     """CD ~ sqrt(k(k+1)/6N): more subjects -> a smaller detectable rank difference."""
     import pandas as pd
@@ -322,3 +407,76 @@ def test_nemenyi_cd_shrinks_with_more_subjects():
         return friedman_nemenyi(mat)["critical_difference"]
 
     assert cd_for(80) < cd_for(20)
+
+
+def test_friedman_ranks_flip_for_lower_is_better_metrics():
+    """NLL/Brier/ECE: rank 1 must be the smallest value, not the largest."""
+    import pandas as pd
+
+    from code.summaries.cross_subject_bench import friedman_nemenyi
+
+    mat = pd.DataFrame({
+        "good": [0.1, 0.2, 0.15],
+        "mid": [0.5, 0.4, 0.45],
+        "bad": [1.0, 0.9, 1.1],
+    })
+    hi = friedman_nemenyi(mat, higher_is_better=True)["avg_ranks"]
+    lo = friedman_nemenyi(mat, higher_is_better=False)["avg_ranks"]
+    assert hi["bad"] < hi["good"]
+    assert lo["good"] < lo["bad"]
+
+
+def test_friedman_drops_incomplete_models_not_subjects():
+    """One unfinished DualCD must not collapse N for the whole CD diagram."""
+    import pandas as pd
+
+    from code.summaries.cross_subject_bench import friedman_nemenyi
+
+    mat = pd.DataFrame({
+        "a": [0.7, 0.6, 0.8, 0.5],
+        "b": [0.6, 0.5, 0.7, 0.4],
+        "c": [0.5, 0.4, 0.6, 0.3],
+        "unfinished": [0.9, None, None, None],
+    })
+    out = friedman_nemenyi(mat)
+    assert "unfinished" in out["dropped_models"]
+    assert "unfinished" not in out["avg_ranks"].index
+    assert out["N"] == 4
+    assert out["k"] == 3
+
+
+def test_paired_tests_wins_follow_metric_direction_and_report_a_ci():
+    import pandas as pd
+
+    from code.summaries.cross_subject_bench import paired_tests
+
+    mat = pd.DataFrame({
+        "atcnet": [0.70, 0.60, 0.65, 0.55],
+        "atcnet_s4": [0.72, 0.63, 0.64, 0.58],
+    })
+    cmp = [("atcnet", "atcnet_s4", "fusion B")]
+    acc = paired_tests(mat, comparisons=cmp, higher_is_better=True)
+    nll = paired_tests(mat, comparisons=cmp, higher_is_better=False)
+    assert int(acc.iloc[0]["wins"]) == 3
+    assert int(acc.iloc[0]["losses"]) == 1
+    assert int(nll.iloc[0]["wins"]) == 1
+    assert int(nll.iloc[0]["losses"]) == 3
+    assert acc.iloc[0]["delta_ci95_lo"] < acc.iloc[0]["delta"] < acc.iloc[0]["delta_ci95_hi"]
+
+
+def test_preregistered_family_is_eight_and_includes_the_noattn_pair():
+    from code.summaries.cross_subject_bench import PREREGISTERED_COMPARISONS
+
+    assert len(PREREGISTERED_COMPARISONS) == 8
+    assert ("atcnet@noattn", "atcnet_s4@noattn",
+            "fusion B, attention removed from both sides") in PREREGISTERED_COMPARISONS
+
+
+def test_save_json_is_strict_and_atomic(tmp_path):
+    from code.utils.io import load_json, save_json
+
+    path = tmp_path / "t.json"
+    save_json({"kappa": float("nan"), "ok": 1.0}, path)
+    got = load_json(path)
+    assert got["kappa"] is None
+    assert got["ok"] == 1.0

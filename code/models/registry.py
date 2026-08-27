@@ -68,7 +68,7 @@ DERIVED_MODEL_NAMES: List[str] = ["atcnet_adv", "atcnet_s4"]
 MODEL_NAMES: List[str] = (BASELINE_MODEL_NAMES + list(FOUNDATION_MODEL_NAMES)
                           + PUBLISHED_MODEL_NAMES + DERIVED_MODEL_NAMES)
 
-#: The canonical cross-subject comparison roster (17 entries once aliases are expanded).
+#: The canonical cross-subject comparison roster (18 entries once aliases are expanded).
 #: Anything outside this list is either deprecated (see ``DEPRECATED_MODELS``) or a
 #: single-dataset historical baseline. Kept here so an experiment config cannot silently
 #: drift away from the documented benchmark.
@@ -82,7 +82,7 @@ BENCHMARK_MODEL_NAMES: List[str] = [
     # ours — fusion direction A: S4ERP base + ATCNet depthwise spatial front-end
     "s4erp_dw@f64d2", "s4erp_dw@f16d8", "s4erp_dw@f16d2p",
     # ours — fusion direction B: ATCNet base + shared causal SSM
-    "atcnet_s4",
+    "atcnet_s4", "atcnet_s4@noattn",
     # ATCNet explanatory ablations
     "atcnet@tcn8", "atcnet@nwin1", "atcnet@noattn",
 ]

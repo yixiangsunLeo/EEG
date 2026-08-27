@@ -21,8 +21,8 @@
 #
 # MEASURED (58ch / 2 classes)
 #   atcnet            114,554
-#   atcnet_s4          23,482   (-79.5%, 4.9x smaller)
-#   atcnet_s4@noattn   21,290   (5.4x smaller)
+#   atcnet_s4          27,834   (-75.7%, 4.1x smaller; includes FFN mixer d_ff=32)
+#   atcnet_s4@noattn   25,642   (4.5x smaller)
 #
 # CRITICAL IMPLEMENTATION NOTE
 #   S4Layer's default log_dt gives time constants of 6.8-546 steps, calibrated for S4ERP's
@@ -35,9 +35,17 @@
 #   The layer is a DIAGONAL SSM (only diag(A) of HiPPO-LegS is used), not the DPLR
 #   construction of Gu et al. 2022 — see docs/PLAN_cross_subject_benchmark_and_fusion.md §5.5.
 #
-# NO Keras L2 PENALTY: ATCNet's conv 0.009 / dense 0.5 constants were tuned for the official
-# 114k model. This one is 4.9x smaller with a different temporal stage; carrying them over
-# would make the comparison a two-variable change.
+# KERAS L2 PENALTY IS KEPT (use_official_l2: true). Upstream ATCNet folds
+# L2(conv 0.009) over its conv kernels and L2(dense 0.5) over its classifier into the loss.
+# Measured at initialization that term is ~12.2 against a cross-entropy of ~0.69 — 17x the
+# data term, not a nudge. Dropping it here would make `atcnet` vs `atcnet_s4` differ in the
+# temporal stage AND in the dominant regularizer, and the ablation would mean nothing.
+# Mapping is layer-for-layer: conv block -> 0.009, dense heads -> 0.5, SSM B/C -> 0.009
+# (standing in for the TCN conv kernels they replace). A_log / A_sign / log_dt / D are
+# excluded: the first three parameterize the state dynamics (shrinking log_dt would
+# destroy the timescale calibration below); D is the SSM skip (init=1) and at init the
+# kernel is ~1e-4, so penalizing D would collapse the temporal stage. Attention is
+# excluded, matching upstream.
 #
 # Data dims (n_channels/n_times/n_classes/sfreq) are injected by the experiment layer.
 name: "atcnet_s4"
@@ -59,12 +67,16 @@ defaults:
   # shared causal SSM replacing the 5 independent TCN branches
   s4_layers: 2
   s4_state_dim: 8
-  s4_d_ff: null        # null -> no feed-forward sub-layer, keeps a block at ~768 params
+  s4_d_ff: 32          # pointwise channel mix; TCN Conv1d(32,32) mixes channels, a
+                       # diagonal SSM is SISO without this. 32 keeps the block tiny.
   s4_dropout: 0.3
 
   # readout: the last n_windows tokens = the official model's window ends
   n_windows: 5
   fuse: "average"
+
+  # see the header — required for the atcnet vs atcnet_s4 comparison to be single-variable
+  use_official_l2: true
 
 per_dataset: {}
 

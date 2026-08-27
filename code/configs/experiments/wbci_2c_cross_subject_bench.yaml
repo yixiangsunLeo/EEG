@@ -36,15 +36,16 @@ experiment:
 #   Recipe changes the model RANKING (RESULTS_TRUTH §5: ATCNet +2.46pp, S4ERP -3.58pp,
 #   opposite signs), so this must be stated as a limitation; the AdamW arm is deferred (P4-4).
 #
-# MODELS — 17 entries in ONE run so any two are pairwise comparable on identical
+# MODELS — 18 entries in ONE run so any two are pairwise comparable on identical
 #   (split_seed, fold, subject) triples. Structural params come from
 #   code/configs/models/<name>.yaml (defaults + per_dataset + variants); `model_params` below
 #   is intentionally EMPTY so there is exactly one source of truth. The resolved dict is
-#   written to <out>/resolved_model_params.json.
+#   written to <out>/resolved_model_params.json (per-group jobs suffix it so they
+#   cannot overwrite each other).
 #     group 1 (10) published + classic baselines and the S4/DINO family
-#     group 2 (3)  s4erp_dw@*   fusion direction A: ATCNet depthwise spatial front-end
-#     group 3 (1)  atcnet_s4    fusion direction B: one shared causal SSM
-#     group 4 (3)  atcnet@*     explanatory ablations
+#     group 2 (3)  s4erp_dw@*        fusion direction A: ATCNet depthwise spatial front-end
+#     group 3 (2)  atcnet_s4[@noattn] fusion direction B: one shared causal SSM
+#     group 4 (3)  atcnet@*          explanatory ablations
 #   Deprecated and excluded: eegnet (self-made), cap_eegnet, s4erp_adv, atcnet_adv,
 #   dualcd_s4_pos. Reasons in code/models/registry.py DEPRECATED_MODELS.
 #
@@ -75,7 +76,7 @@ models: [
   # ---- group 2: fusion direction A (advisor-specified main line) ----
   "s4erp_dw@f64d2", "s4erp_dw@f16d8", "s4erp_dw@f16d2p",
   # ---- group 3: fusion direction B ----
-  "atcnet_s4",
+  "atcnet_s4", "atcnet_s4@noattn",
   # ---- group 4: ATCNet explanatory ablations ----
   "atcnet@tcn8", "atcnet@nwin1", "atcnet@noattn",
 ]
@@ -100,7 +101,7 @@ train:
   monitor: "macro_f1"             # ERP-Benchmark selects on "best F1 Score"
   monitor_mode: "max"
   early_stopping_patience: 25
-  # ---- shared across all 17 entries so the table is comparable ----
+  # ---- shared across all 18 entries so the table is comparable ----
   normalization: "per_sample_zscore"   # per-trial, fit-free: no statistic crosses the split
   num_workers: 2
   amp: false

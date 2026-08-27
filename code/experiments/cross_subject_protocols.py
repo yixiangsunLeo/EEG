@@ -647,9 +647,9 @@ def run_cell(
         # `_make_dataset` preserves subject-trial order and the loader is unshuffled, so
         # these arrays align element-wise with `sd.session_of_trial`.
         n = int(np.asarray(y_true).size)
-        pred_dump["subject"].append(np.full(n, subj, dtype="<U16"))
-        pred_dump["session"].append(np.asarray(sd.session_of_trial[:n], dtype="<U16")
-                                    if sd.session_of_trial else np.full(n, "", dtype="<U16"))
+        pred_dump["subject"].append(np.full(n, subj, dtype="<U32"))
+        pred_dump["session"].append(np.asarray(sd.session_of_trial[:n], dtype="<U32")
+                                    if sd.session_of_trial else np.full(n, "", dtype="<U32"))
         pred_dump["y_true"].append(np.asarray(y_true, dtype=np.int16))
         pred_dump["y_pred_best"].append(np.asarray(y_pred, dtype=np.int16))
         pred_dump["y_pred_last"].append(np.asarray(y_pred_l, dtype=np.int16))

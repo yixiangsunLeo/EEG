@@ -15,11 +15,14 @@
 #   depthwise structure is changed. The other two are a regularizer and an unrelated
 #   hyperparameter; changing them too would make `s4erp` vs `s4erp_dw` uninterpretable.
 #
-# WHAT IT DOES NOT FIX
-#   After the stem shrinks, the largest remaining block is the 187k/125k classifier head on
-#   62,336-d flattened features — the p >> n width diagnosed in
-#   docs/ANALYSIS_atcnet_and_adversarial.md §1.2. Fusion direction B (`atcnet_s4`) attacks
-#   that instead. The two are complementary, not alternatives.
+# WHAT REMAINS AFTER THE FIX
+#   S4 encoder 275,712 and the flatten classifier 124,674. The head is NOT assumed to be a
+#   defect: within this family wider pooling has consistently been better (flatten 65.99% >
+#   6-bin timepatch 61.07% > attention-pooled-to-one-vector 45.11%, RESULTS_TRUTH §4.1).
+#   Those numbers support "the representation must preserve temporal order", not "the head
+#   should be narrow" — so narrowing it is not an implied next step, and an earlier claim in
+#   this project that the wide head is a "p >> n defect" (based on a confounded two-point
+#   comparison against ATCNet) has been retracted.
 #
 # Everything downstream of the stem (S4 encoder, flatten pooling, classifier) is
 # byte-for-byte S4ERP, so `s4erp` is the paired control.

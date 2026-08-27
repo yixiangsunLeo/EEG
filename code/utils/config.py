@@ -6,6 +6,8 @@
 
 from __future__ import annotations
 
+import os
+import tempfile
 from pathlib import Path
 from typing import Any, Dict
 
@@ -25,8 +27,20 @@ def load_config(path: str | Path) -> Dict[str, Any]:
 
 
 def save_config(cfg: Dict[str, Any], path: str | Path) -> None:
-    """把（解析/合并后的）配置原样写出，便于每次 run 留档。"""
+    """把（解析/合并后的）配置原样写出，便于每次 run 留档。
+
+    Atomic (tempfile + replace) so concurrent Slurm groups cannot leave a truncated file.
+    """
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "w", encoding="utf-8") as f:
-        yaml.safe_dump(cfg, f, allow_unicode=True, sort_keys=False)
+    fd, tmp = tempfile.mkstemp(prefix=path.name + ".", suffix=".tmp", dir=path.parent)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            yaml.safe_dump(cfg, f, allow_unicode=True, sort_keys=False)
+        os.replace(tmp, path)
+    except Exception:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise

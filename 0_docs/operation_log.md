@@ -16,7 +16,8 @@ status: "active"
 | 2026-08-27 | CREATE | `code/models/atcnet/atcnet_s4.py` | 融合方向 B：ATCNet 卷积块 + 共享因果 SSM 替 5 个 TCN；`reinit_log_dt_for_length` + 因果掩码 MHA。`atcnet_torch.py` 未动。 |
 | 2026-08-27 | CREATE | `code/summaries/cross_subject_bench.py` | 配对 Wilcoxon + Holm / Cohen's d_z / Friedman + Nemenyi CD / 按 val 选变体 / 跨数据集主表。 |
 | 2026-08-27 | CREATE | `code/configs/models/{s4erp_dw,atcnet_s4}.yaml` | 两个融合模型的超参与变体定义。 |
-| 2026-08-27 | CREATE | `code/configs/experiments/{wbci_2c,shu}_cross_subject_bench.yaml` | 两个 benchmark run（17 条目 × 5 折 × split 41/42），`model_params` 刻意留空。 |
+| 2026-08-27 | CREATE | `code/configs/experiments/{wbci_2c,shu}_cross_subject_bench.yaml` | 两个 benchmark run（18 条目 × 5 折 × split 41/42），`model_params` 刻意留空。 |
+| 2026-08-27 | UPDATE | `code/models/atcnet/atcnet_s4.py` + `e2e_trainer.py` + summaries | 第二轮审查：`s4_d_ff=32` + B/C `max_norm(0.6)`（atcnet_s4=27,834）；DualCD 累积 after_step 看 grouped batch；早停续跑不再多训；Holm 按家族 8；Friedman 丢不完整模型列。 |
 | 2026-08-27 | CREATE | `scripts/slurm/{bench_gpu.sbatch,submit_bench.sh}` | 4 卡分组 + 48h 自动重投链 + sacct 快照 + 末尾 summarize。 |
 | 2026-08-27 | CREATE | `tests/models/test_fusion_and_specs.py` + `tests/models/__init__.py` | 41 个测试（别名 / 参数解析 / 融合模型参数量与因果性 / 签名守卫 / 统计）。 |
 | 2026-08-27 | CREATE | `LICENSE`, `requirements.txt`, `environment.yml`, `pyproject.toml`, `REPRODUCE.md` | 公开准备（决定 14）。 |

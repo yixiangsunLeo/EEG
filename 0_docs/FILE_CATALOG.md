@@ -15,7 +15,7 @@ status: "active"
 
 | 路径 | 作用 |
 |:---|:---|
-| `docs/PLAN_cross_subject_benchmark_and_fusion.md` | **本轮权威计划**：27 条已锁定决定、两个数据集协议（6:2:2）、17 个模型条目、配方、算力、P0–P4 步骤、实验清单审计。 |
+| `docs/PLAN_cross_subject_benchmark_and_fusion.md` | **本轮权威计划**：27 条已锁定决定、两个数据集协议（6:2:2）、18 个模型条目、配方、算力、P0–P4 步骤、实验清单审计。 |
 | `code/models/model_specs.py` | 模型结构参数的**单一来源** + **模型别名机制** `name@variant`（`defaults`/`per_dataset`/`variants` 合并；`safe_tag` 给路径用）。 |
 | `code/models/atcnet/atcnet_s4.py` | **融合方向 B**：ATCNet 卷积块 + 一个共享因果 SSM 替 5 个独立 TCN；含 `reinit_log_dt_for_length`（短序列时间常数重标定）与因果掩码 MHA。`atcnet_torch.py` 未改动。 |
 | `code/summaries/cross_subject_bench.py` | 跨被试统计层：per-subject 矩阵、配对 Wilcoxon + Holm、Cohen's `d_z`、Friedman + Nemenyi CD、按 val 选变体、跨数据集主表。 |

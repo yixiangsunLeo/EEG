@@ -495,17 +495,17 @@ class S4ERPDW(S4ERP):
     one factor: how the spatial filter bank is parameterized. See
     ``encoders.DepthwiseShallowNetEmbedding`` for why only that factor is changed.
 
-    Parameter budget at 58 channels / ``d_model=128``::
+    Parameter budget at 58 channels / ``d_model=128`` (measured, 2-class)::
 
-        stem      970,496 -> 25,984  (F1=64, D=2)      [-97%]
-        S4 encoder        275,712    (unchanged)
-        classifier        187,011    (unchanged)
-        total   1,433,219 -> 488,707
+        stem (dense -> depthwise F1=64, D=2)   970,496 -> 25,984
+        S4 encoder + flatten classifier        unchanged
+        total                                1,370,882 -> 426,370   (-68.9%)
 
-    After the fix the classifier head (187k on 62,336-d flattened features) becomes the
-    largest remaining block. That is a *different* problem — the p >> n classifier width
-    diagnosed in ``docs/ANALYSIS_atcnet_and_adversarial.md`` §1.2 — and this model does not
-    address it; fusion direction B (``atcnet_s4``) does. The two are complementary.
+    The flatten head is **not** assumed to be a defect here: within this model
+    family wider pooling has consistently been *better* (flatten 65.99% > 6-bin timepatch
+    61.07% > attention-pooled-to-one-vector 45.11%, ``docs/RESULTS_TRUTH.md`` §4.1). The
+    pattern those numbers support is "the representation must preserve temporal order", not
+    "the head should be narrow" — so narrowing it is not an implied next step.
     """
 
     def __init__(self, config, d_model=128, n_layers=4, state_dim=8,

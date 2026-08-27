@@ -53,6 +53,7 @@ if str(PROJECT_ROOT) not in sys.path:
 import pandas as pd  # noqa: E402
 
 from code.summaries.cross_subject_bench import (  # noqa: E402
+    LOWER_IS_BETTER,
     METRICS,
     PRIMARY_METRIC,
     cd_diagram,
@@ -98,7 +99,8 @@ def summarize_one(run_dir: Path, metric: str) -> Dict[str, object]:
     mat = subject_matrix(df, metric=metric)
     mat.to_csv(tables / "per_subject.csv")
 
-    paired = paired_tests(mat)
+    higher = metric not in LOWER_IS_BETTER
+    paired = paired_tests(mat, higher_is_better=higher)
     if not paired.empty:
         paired.to_csv(tables / "paired_tests.csv", index=False)
 
@@ -106,7 +108,7 @@ def summarize_one(run_dir: Path, metric: str) -> Dict[str, object]:
     if not sel.empty:
         sel.to_csv(tables / "variant_selection.csv", index=False)
 
-    fn = friedman_nemenyi(mat)
+    fn = friedman_nemenyi(mat, higher_is_better=higher)
     fn_json = {k: (v.to_dict() if isinstance(v, pd.Series) else v) for k, v in fn.items()}
     (tables / "friedman_nemenyi.json").write_text(
         json.dumps(fn_json, indent=2, ensure_ascii=False), encoding="utf-8")
@@ -175,21 +177,24 @@ def _write_report(run_dir: Path, df: pd.DataFrame, per_model: pd.DataFrame,
     if not paired.empty:
         md += ["", f"## {section.next()}. Pre-registered paired comparisons (Wilcoxon, Holm-corrected, n={n_subj})",
                "",
-               "| question | baseline → candidate | Δ pp | median Δ | d_z | W/T/L | p | p (Holm) | sig |",
-               "|:---|:---|---:|---:|---:|:---:|---:|---:|:---:|"]
+               "| question | baseline → candidate | Δ pp | 95% CI | median Δ | d_z | W/T/L | p | p (Holm) | sig |",
+               "|:---|:---|---:|---:|---:|---:|:---:|---:|---:|:---:|"]
         for _, r in paired.iterrows():
             md.append(
                 f"| {r['question']} | `{r['baseline']}` → `{r['candidate']}` "
-                f"| **{100 * r['delta']:+.2f}** | {100 * r['median_delta']:+.2f} "
+                f"| **{100 * r['delta']:+.2f}** "
+                f"| [{100 * r['delta_ci95_lo']:+.2f}, {100 * r['delta_ci95_hi']:+.2f}] "
+                f"| {100 * r['median_delta']:+.2f} "
                 f"| {r['d_z']:+.2f} | {r['wins']}/{r['ties']}/{r['losses']} "
                 f"| {r['p_value']:.4f} | {r['p_holm']:.4f} "
                 f"| {'**yes**' if r['significant_holm_05'] else 'no'} |"
             )
         md += ["",
-               "> Δ is candidate − baseline in percentage points. `d_z` is Cohen's d for "
-               "paired data (mean difference / SD of differences); |d_z| < 0.2 is a small "
-               "effect regardless of the p-value. W/T/L counts subjects where the candidate "
-               "won / tied / lost."]
+               "> Δ is candidate − baseline in percentage points (t-interval on the paired "
+               "mean). `d_z` is Cohen's d for paired data (mean difference / SD of "
+               "differences); |d_z| < 0.2 is a small effect regardless of the p-value. "
+               "W/T/L counts subjects where the candidate won / tied / lost "
+               f"({'higher' if metric not in LOWER_IS_BETTER else 'lower'} {metric} is a win)."]
 
     if "avg_ranks" in fn:
         md += ["", f"## {section.next()}. Omnibus ranking (Friedman + Nemenyi)", "",
@@ -207,9 +212,11 @@ def _write_report(run_dir: Path, df: pd.DataFrame, per_model: pd.DataFrame,
 
     md += ["", f"## {section.next()}. Protocol", "",
            "Split: subject-level k-fold, 6:2:2 train/val/test subjects, strict zero-shot "
-           "(a test subject appears in neither train nor val). Seeds 41,42 re-draw the "
-           "subject partition (ERP-Benchmark, arXiv:2601.00573); the training seed is fixed "
-           "at 0, so the reported spread is the spread of the partition. Recipe: Adam 1e-4, "
+           "(a test subject appears in neither train nor val). "
+           f"Split seeds {sorted(set(df['split_seed'].dropna().tolist()))} re-draw the "
+           "subject partition (ERP-Benchmark, arXiv:2601.00573); the training seed is "
+           f"{sorted(set(df['seed'].dropna().tolist()))}, so the reported spread is the "
+           "spread of the partition. Recipe: Adam 1e-4, "
            "batch 128, no scheduler / weight decay / gradient clipping, early stopping on "
            "validation macro-F1 with patience 25. Model selection never sees the test "
            "subjects; the per-epoch test curve is monitoring only.", ""]

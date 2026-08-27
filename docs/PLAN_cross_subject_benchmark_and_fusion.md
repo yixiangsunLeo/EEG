@@ -16,7 +16,7 @@ status: "p0_done_awaiting_p1"
 >
 > **P0 阶段的实测修正（2026-08-27）**：
 > * 参数量表原为 3 类值，已换成本轮的 **2 类**实测值（§5.1/§5.2/§5.3）。
-> * `atcnet_s4` 实测 **23,482** 参数（比 ATCNet 的 114,554 小 **4.88 倍**），
+> * `atcnet_s4` 实测 **27,834** 参数（比 ATCNet 的 114,554 小 **4.12 倍**；含 `s4_d_ff=32` 通道混合），
 >   `readout_idx = [12,13,14,15,16]`，SSM 时间常数 **[0.27, 16.89] tokens**（Tc=17）。
 > * `cell_signature` 的守卫做了比原计划更精确的设计：`early_stopping_patience` **总是**
 >   进签名，`max_epochs` **仅在有 scheduler 时**进（见 §6.2 的修订说明）。
@@ -25,6 +25,12 @@ status: "p0_done_awaiting_p1"
 > 站不住（见 §0 决定 13 的修订说明）。现在**全部模型——10 个 benchmark + 2 个融合方向
 > + 3 个 ATCNet 消融——在同一个 run 里一次提交**，成本只从 356 增到约 450 GPU-h
 > （3.7 天 → 4.7 天），换来任意两个模型之间都可做配对检验。
+>
+> **v3 修订（2026-08-27，P0 代码审查）**：预注册比较里已有
+> `atcnet@noattn` vs `atcnet_s4@noattn`（§5.3/§5.4 的单变量对照），但 17 条目名册漏了
+> 后者，Holm 家族会静默缩成 7。补为第 18 条，成本约 +17 GPU-h。同时：`atcnet_s4` 的
+> L2 不再罚 SSM skip `D`（init=1，核 ~1e-4，罚它会把时间阶段压成恒等）；Friedman /
+> Wilcoxon 的"更好"方向随指标翻转；并发 group 不再互相覆盖 `resolved_model_params.json`。
 >
 > 数字来自 `docs/RESULTS_TRUTH.md`、已完成 run 的 `result.json`、manifest 实测、参考文献原文。
 > 开工后同步更新 `0_docs/FILE_CATALOG.md` / `0_docs/operation_log.md` /
@@ -59,7 +65,7 @@ status: "p0_done_awaiting_p1"
 | 21 | 所有实验按 4090 集群规范配置，log 与 error 完整落盘 | 用户 08-27 |
 | 22 | **融合方向 A（主线，用户指定）：「空间滤波使用 ATCNet 的」** → `s4erp_dw` | **用户 08-26 第 1 点** |
 | 23 | ATCNet 消融要跑并对比（`tcn_filters` / `n_windows` / `attention`） | 用户 08-26 第 4 点 |
-| **25** | **全部模型一次提交**：10 benchmark + 融合方向 A（3 变体）+ 融合方向 B（1）+ ATCNet 消融（3）= **17 个条目**，同 run / 同 fold / 同 split / 同配方 | **用户 08-27，推翻决定 13** |
+| **25** | **全部模型一次提交**：10 benchmark + 融合方向 A（3 变体）+ 融合方向 B（2）+ ATCNet 消融（3）= **18 个条目**，同 run / 同 fold / 同 split / 同配方 | **用户 08-27，推翻决定 13；审查修订 +`atcnet_s4@noattn`** |
 | **26** | **融合方向 A 跑 3 个 F1/D 变体**（见 §5.2），不预先猜一个 | 我提，成本仅 +18 GPU-h |
 | **27** | **变体的"最优"按验证集 `macro_f1` 选，不按 test 选**；三个变体全部列表 | 我提，合法性要求 |
 
@@ -288,7 +294,7 @@ cross_subject:
 
 ---
 
-## 5. 完整模型清单：17 个条目
+## 5. 完整模型清单：18 个条目
 
 一次提交的全部内容。**`@` 后缀是 P0-3 的模型别名机制**，同一模型的不同配置。
 
@@ -357,12 +363,27 @@ dense 空间卷积的代价不只是"现在大"，而是**随电极数线性放�
 **这三个是同一个融合方案的三种配置，不是三个不同的融合。**
 `s4erp` 与它们构成单变量对照（只改空间卷积类型），是"depthwise 空间前端是否更好"最强的证据形式。
 
-**修完之后的连带发现**：S4ERP 剩下的最大块变成 **S4Encoder 275,712（56%）+ flatten 分类头
-187,011（38%）**。那个 187K 的宽分类头正是早期分析诊断出的 p≫n 病灶
-（训练集 7,199 trial，分类头参数是样本量的 26 倍）。**方向 A 修不了它 —— 那是方向 B 的事。
-所以 A 和 B 是互补的，不是替代关系。**
+**修完之后剩下什么**：S4Encoder 275,712（65%）+ flatten 分类头 124,674（29%）。
 
-### 5.3 组 3 — 融合方向 B：ATCNet 基座 + S4 时间聚合（1 个）
+> ⚠ **一处早期论证的更正（2026-08-27 审查）**：我曾把这个宽分类头称作"p≫n 病灶"，
+> 依据是 ATCNet（495 参数的头，70.85%）vs S4ERP（187K 的头，64.68%）。那是**跨架构的
+> 两点比较，混淆严重**。同族内部的证据方向相反（`RESULTS_TRUTH` §4.1）：
+>
+> | DINO 变体 | 池化 | feature_dim | Acc |
+> |:---|:---|---:|---:|
+> | flatten | 全保留 | 62,336 | **65.99%** |
+> | timepatch | 6 个时间箱 | 1,536 | 61.07% |
+> | pos | 注意力池化成 1 个向量 | 128 | 45.11% |
+>
+> **同族内"越宽越好"。** 真正的规律不是"头窄好"，而是**"表征必须保序"**：
+> 注意力池化是置换不变的加权平均，把时间结构抹平了；flatten 全保留；
+> ATCNet 的窄头之所以能行，是因为它前面的因果 TCN 已经做了**保序的**压缩。
+>
+> 所以：**"宽头是病灶"这个说法不成立，不要作为设计依据。** 相应地，
+> "给 S4ERP 加一个 SSM 末位读出把头压窄"这类改法**不应该做**——同族证据预测它会掉点。
+> 方向 A 与方向 B 仍然互补（一个改空间前端、一个改时间聚合），但互补性不建立在头宽上。
+
+### 5.3 组 3 — 融合方向 B：ATCNet 基座 + S4 时间聚合（2 个）
 
 换掉 ATCNet 的阶段 3（时间聚合）+ 顺带解决它的一个结构矛盾。
 
@@ -371,8 +392,8 @@ dense 空间卷积的代价不只是"现在大"，而是**随电极数线性放�
 | # | 条目 | 参数 | 对比 |
 |:--|:---|---:|:---|
 | — | `atcnet`（对照） | 114,554 | — |
-| 14 | `atcnet_s4` | **23,482** | **小 4.88 倍**（−79.5%） |
-| — | `atcnet_s4@noattn` | **21,290** | **小 5.38 倍**（−81.4%） |
+| 14 | `atcnet_s4` | **27,834** | **小 4.12 倍**（−75.7%；含 FFN mixer） |
+| 15 | `atcnet_s4@noattn` | **25,642** | **小 4.47 倍**（−77.6%）；`atcnet@noattn` 的单变量对照 |
 
 实测确认（`describe()` 输出，P1 smoke 会断言）：
 `Tc = 17`、`readout_idx = [12, 13, 14, 15, 16]`（正是官方模型 5 个窗口的末步位置）、
@@ -402,9 +423,9 @@ SSM 时间常数 **[0.27, 16.89] tokens** —— 落在 `Tc = 17` 之内，说�
 | # | 条目 | 改动 | 实测参数 @58ch | 回答什么 |
 |:--|:---|:---|---:|:---|
 | — | `atcnet`（对照） | — | 114,554 | — |
-| 15 | `atcnet@tcn8` | `tcn_filters: 32→8` | **41,234**（−64%） | TCN 是否过参数化？若掉点 <1pp，则方向 B 的"共享 SSM 替 5 个 TCN"有实证依据 |
-| 16 | `atcnet@nwin1` | `n_windows: 5→1` | **38,450**（−66%） | 滑窗集成贡献多少？（假设 H2：若集成是主力，应掉 3–5pp） |
-| 17 | `atcnet@noattn` | `attention: mha→null` | **103,594**（−9.6%） | MHA 是否是摆设？（假设 H3：预测掉点 <1pp） |
+| 16 | `atcnet@tcn8` | `tcn_filters: 32→8` | **41,234**（−64%） | TCN 是否过参数化？若掉点 <1pp，则方向 B 的"共享 SSM 替 5 个 TCN"有实证依据 |
+| 17 | `atcnet@nwin1` | `n_windows: 5→1` | **38,450**（−66%） | 滑窗集成贡献多少？（假设 H2：若集成是主力，应掉 3–5pp） |
+| 18 | `atcnet@noattn` | `attention: mha→null` | **103,594**（−9.6%） | MHA 是否是摆设？（假设 H3：预测掉点 <1pp） |
 
 `@noattn` 只省 9.6% 的参数却是三个消融里唯一不动 TCN 的，所以它同时是
 `atcnet_s4@noattn` 的单变量对照（见 §5.3）。
@@ -549,21 +570,21 @@ train:
 | 1 | `deepconvnet` | 0.037 h（实测） | ~0.2 h |
 | **1** | **小计（10 个）** | **6.47 h** | **~29.1 h** |
 | 2 | `s4erp_dw` × 3 | ~0.39 h（估） | ~1.8 h |
-| 3 | `atcnet_s4` | ~0.30 h（估） | ~1.4 h |
+| 3 | `atcnet_s4` + `@noattn` | ~0.60 h（估） | ~2.8 h |
 | 4 | `atcnet@tcn8` / `@nwin1` / `@noattn` | ~1.04 h（估） | ~4.7 h |
-| **合计** | **17 个条目** | **~8.20 h** | **~37.0 h** |
+| **合计** | **18 个条目** | **~8.50 h** | **~38.4 h** |
 
 ¹ 缩放 ≈ 4.5×：训练集 17,700/7,200 = 2.46，通道 58/32 = 1.81。
 
 | run | cells | GPU-h |
 |:---|---:|---:|
-| `wbci_2c_cross_subject_bench_v1`：17 × 5 折 × 2 split | **170** | ~370 |
-| `shu_cross_subject_bench_v1`：17 × 5 折 × 2 split | **170** | ~82 |
-| **合计** | **340** | **~452** |
+| `wbci_2c_cross_subject_bench_v1`：18 × 5 折 × 2 split | **180** | ~384 |
+| `shu_cross_subject_bench_v1`：18 × 5 折 × 2 split | **180** | ~85 |
+| **合计** | **360** | **~469** |
 
-4 卡并行（QOS `gres/gpu=4` 硬上限）→ 墙钟约 **113 小时 ≈ 4.7 天**。
+4 卡并行（QOS `gres/gpu=4` 硬上限）→ 墙钟约 **117 小时 ≈ 4.9 天**。
 
-**对比原分阶段方案（356 GPU-h / 3.7 天）：多 0.9 天，换来 17 个条目两两可配对检验。**
+**对比原分阶段方案（356 GPU-h / 3.7 天）：多 ~1.2 天，换来 18 个条目两两可配对检验。**
 3 个 DINO 变体仍占约 73% 算力，不裁剪 —— 它们是 Claim B 的重要论据
 （67M 参数换来垫底表现）。
 
@@ -652,7 +673,7 @@ train:
 sbatch -J bench_smoke scripts/slurm/bench_gpu.sbatch \
   code/configs/experiments/wbci_2c_cross_subject_bench.yaml \
   --folds-subset 0 \
-  --models eegnet_official,atcnet,s4erp,dualcd_transformer,dualcd_s4_timepatch,s4erp_dw@f64d2,s4erp_dw@f16d2p,atcnet_s4,atcnet@tcn8 \
+  --models eegnet_official,atcnet,s4erp,dualcd_transformer,dualcd_s4_timepatch,s4erp_dw@f64d2,s4erp_dw@f16d2p,atcnet_s4,atcnet_s4@noattn,atcnet@tcn8 \
   --max-epochs 5 \
   --out outputs/experiments/wbci_shu/wbci_2c_bench_smoke \
   --ckpt-dir checkpoints/wbci_shu/wbci_2c_bench_smoke
@@ -660,22 +681,22 @@ sbatch -J bench_smoke scripts/slurm/bench_gpu.sbatch \
 
 **验收清单**（全过才进 P2）：
 
-1. 9 个 cell 全 `ok`，无异常
-2. `n_params` 全部非 0，且组 2/3 的实测参数量与 §5.2/§5.3 的估算一致
-   （`s4erp_dw@f64d2` ≈ 488,707；`atcnet_s4` ≈ 21,400）
+1. 10 个 cell 全 `ok`，无异常
+2. `n_params` 全部非 0，且组 2/3 的实测参数量与 §5.2/§5.3 一致
+   （`s4erp_dw@f64d2` = 426,370；`atcnet_s4` = 27,834）
 3. per-trial 文件写出，Kappa 出现在指标里
 4. `splits/*.json` 里 6:2:2 与 `split_seeds` 正确、测试被试与训练/验证零交集
 5. `timepatch` 的 `bin_assignments` 覆盖全部 6 个箱（不能全挤在最后一个）
-6. `atcnet_s4` 的 `log_dt` 初始化后时间常数落在 1–13 步量级，**不是 6.8–555**
+6. `atcnet_s4` 的 `log_dt` 初始化后时间常数落在 **0.27–16.9 tokens**（Tc=17），**不是 6.8–555**
 7. `dualcd_transformer` 显存峰值确认 `micro_batch=16` 够用
 8. **实测单 epoch 耗时替换 §7 的全部估算**；若与估算差 >50%，先报告修正预算再排产
 
-### P2 — 全量统一 run（4 卡，约 4.7 天）
+### P2 — 全量统一 run（4 卡，约 4.9 天）
 
 | run_id | 内容 |
 |:---|:---|
-| `wbci_2c_cross_subject_bench_v1` | **17 条目** × 5 折 × split 41,42 = **170 cells** |
-| `shu_cross_subject_bench_v1` | **17 条目** × 5 折 × split 41,42 = **170 cells** |
+| `wbci_2c_cross_subject_bench_v1` | **18 条目** × 5 折 × split 41,42 = **180 cells** |
+| `shu_cross_subject_bench_v1` | **18 条目** × 5 折 × split 41,42 = **180 cells** |
 
 产出：per-subject 表、per-model 表、跨数据集主表（Acc/F1/AUROC + 补充列 + 参数量 + GPU-h）、
 配对检验矩阵、CD diagram、三曲线图。

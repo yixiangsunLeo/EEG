@@ -11,7 +11,7 @@ difference, which drops the standard error to ~1.0pp at n=25 and ~0.7pp at n=51.
 
 Pairing is legitimate here because all models are trained on identical
 ``(split_seed, fold, subject)`` triples in a single run — that is the whole reason the plan
-submits all 17 entries together instead of staging them.
+submits all 18 entries together instead of staging them.
 
 Layers, from raw to reported
 ----------------------------
@@ -21,7 +21,7 @@ Layers, from raw to reported
 3. ``per_model_table``— the headline mean +/- std, plus spread over split seeds.
 4. ``paired_tests``  — Wilcoxon signed-rank on the pre-registered comparisons only
    (``PREREGISTERED_COMPARISONS``), Holm-corrected inside that family, with Cohen's
-   ``d_z`` and win/tie/loss counts.
+   ``d_z``, a 95% t-interval on the paired Δ, and win/tie/loss counts.
 5. ``friedman_nemenyi`` + ``cd_diagram`` — the omnibus test and the critical-difference
    figure that benchmark papers report (Demsar 2006). The Nemenyi critical value is computed
    from ``scipy.stats.studentized_range`` rather than a lookup table, so it is exact for any
@@ -35,12 +35,12 @@ Multiple-comparison policy
 --------------------------
 Two families, deliberately separated:
 
-* the pre-registered comparisons (7 of them) answer the questions the experiment was
+* the pre-registered comparisons (8 of them) answer the questions the experiment was
   designed for, and are Holm-corrected among themselves;
 * the all-pairs ranking is reported through Friedman + Nemenyi, which is the standard
-  omnibus procedure and does not pretend that 136 pairwise tests are independent.
+  omnibus procedure and does not pretend that 153 pairwise tests are independent.
 
-Running 136 Holm-corrected pairwise tests instead would be so conservative that nothing
+Running 153 Holm-corrected pairwise tests instead would be so conservative that nothing
 could reach significance, which is a statement about the procedure rather than the models.
 """
 
@@ -61,6 +61,9 @@ METRICS: List[str] = ["accuracy", "macro_f1", "auc", "balanced_accuracy", "cohen
 
 #: Metric used for ranking and the CD diagram unless overridden.
 PRIMARY_METRIC = "accuracy"
+
+#: Metrics for which rank 1 = *smallest* value. Accuracy/F1/AUROC/kappa are the other way.
+LOWER_IS_BETTER = frozenset({"nll", "brier", "ece"})
 
 #: Comparisons the experiment was designed to answer, declared here so the set cannot grow
 #: after the numbers are known. ``(baseline, candidate, question)``.
@@ -201,12 +204,17 @@ def per_model_table(df: pd.DataFrame) -> pd.DataFrame:
 # --------------------------------------------------------------------------- #
 # 4. Paired tests on the pre-registered comparisons
 # --------------------------------------------------------------------------- #
-def _holm(pvals: Sequence[float]) -> np.ndarray:
-    """Holm-Bonferroni step-down adjusted p-values (monotone, capped at 1)."""
+def _holm(pvals: Sequence[float], n_family: Optional[int] = None) -> np.ndarray:
+    """Holm-Bonferroni step-down adjusted p-values (monotone, capped at 1).
+
+    ``n_family`` is the size of the *pre-registered* family, not the number of tests
+    that happened to run. A partial sweep must not make the remaining tests easier
+    to call significant by shrinking Holm's multiplier.
+    """
     p = np.asarray(pvals, dtype=float)
-    n = p.size
+    n = int(n_family if n_family is not None else p.size)
     order = np.argsort(p)
-    adj = np.empty(n, dtype=float)
+    adj = np.empty(p.size, dtype=float)
     running = 0.0
     for rank, idx in enumerate(order):
         running = max(running, (n - rank) * p[idx])
@@ -224,6 +232,8 @@ class PairedResult:
     mean_candidate: float
     delta: float           # candidate - baseline, in the metric's own units
     median_delta: float
+    delta_ci95_lo: float   # Student's t interval on the paired mean
+    delta_ci95_hi: float
     d_z: float             # Cohen's d for paired data: mean(diff) / std(diff)
     wins: int
     ties: int
@@ -236,6 +246,7 @@ def paired_tests(
     mat: pd.DataFrame,
     comparisons: Sequence[Tuple[str, str, str]] = tuple(PREREGISTERED_COMPARISONS),
     tie_eps: float = 1e-12,
+    higher_is_better: bool = True,
 ) -> pd.DataFrame:
     """Wilcoxon signed-rank per comparison, Holm-corrected within the family.
 
@@ -245,10 +256,25 @@ def paired_tests(
     every model-level effect in this project so far has been smaller than the
     between-subject spread.
 
+    ``method="approx"`` is forced so SHU (n=25, scipy would use the exact distribution)
+    and WBCIC-2C (n=51, scipy would use the normal approximation) are the same test.
+    A single tie at n=51 would otherwise silently flip the method.
+
+    Wins/ties/losses count subjects where the candidate is *better* / tied / worse.
+    For lower-is-better metrics pass ``higher_is_better=False``; ``delta`` stays
+    candidate − baseline in raw units (so a negative Δ on NLL is an improvement).
+
     Comparisons whose models are absent from ``mat`` are skipped (a partially finished sweep
     should still produce the table it can).
     """
+    import inspect
+
+    from scipy.stats import t as student_t
     from scipy.stats import wilcoxon
+
+    wilcox_kw: Dict[str, object] = dict(zero_method="wilcox", alternative="two-sided")
+    if "method" in inspect.signature(wilcoxon).parameters:
+        wilcox_kw["method"] = "approx"
 
     results: List[PairedResult] = []
     for base, cand, question in comparisons:
@@ -260,24 +286,32 @@ def paired_tests(
         b = pair[base].to_numpy(dtype=float)
         c = pair[cand].to_numpy(dtype=float)
         diff = c - b
+        n = int(len(pair))
         sd = float(np.std(diff, ddof=1))
+        mean_d = float(diff.mean())
+        se = (sd / np.sqrt(n)) if n > 0 and sd == sd else float("nan")
+        t_crit = float(student_t.ppf(0.975, n - 1)) if n > 1 else float("nan")
+        ci_half = t_crit * se if se == se else float("nan")
         try:
-            _, p = wilcoxon(c, b, zero_method="wilcox", alternative="two-sided")
+            _, p = wilcoxon(c, b, **wilcox_kw)
         except ValueError:
             # all differences zero -> no evidence of a difference
             p = 1.0
+        advantage = diff if higher_is_better else -diff
         results.append(PairedResult(
-            baseline=base, candidate=cand, question=question, n=int(len(pair)),
+            baseline=base, candidate=cand, question=question, n=n,
             mean_baseline=float(b.mean()), mean_candidate=float(c.mean()),
-            delta=float(diff.mean()), median_delta=float(np.median(diff)),
-            d_z=(float(diff.mean() / sd) if sd > 0 else float("nan")),
-            wins=int((diff > tie_eps).sum()), ties=int((np.abs(diff) <= tie_eps).sum()),
-            losses=int((diff < -tie_eps).sum()), p_value=float(p),
+            delta=mean_d, median_delta=float(np.median(diff)),
+            delta_ci95_lo=mean_d - ci_half, delta_ci95_hi=mean_d + ci_half,
+            d_z=(float(mean_d / sd) if sd > 0 else float("nan")),
+            wins=int((advantage > tie_eps).sum()),
+            ties=int((np.abs(diff) <= tie_eps).sum()),
+            losses=int((advantage < -tie_eps).sum()), p_value=float(p),
         ))
     if not results:
         return pd.DataFrame()
     out = pd.DataFrame([r.__dict__ for r in results])
-    out["p_holm"] = _holm(out["p_value"].tolist())
+    out["p_holm"] = _holm(out["p_value"].tolist(), n_family=len(comparisons))
     out["significant_holm_05"] = out["p_holm"] < 0.05
     return out.sort_values("p_holm")
 
@@ -285,7 +319,8 @@ def paired_tests(
 # --------------------------------------------------------------------------- #
 # 5. Omnibus ranking: Friedman + Nemenyi
 # --------------------------------------------------------------------------- #
-def friedman_nemenyi(mat: pd.DataFrame, alpha: float = 0.05) -> Dict[str, object]:
+def friedman_nemenyi(mat: pd.DataFrame, alpha: float = 0.05,
+                     higher_is_better: bool = True) -> Dict[str, object]:
     """Friedman omnibus test + Nemenyi critical difference over the complete-case matrix.
 
     Ranks are computed per subject (1 = best model on that subject) and averaged. The
@@ -295,22 +330,28 @@ def friedman_nemenyi(mat: pd.DataFrame, alpha: float = 0.05) -> Dict[str, object
 
     with :math:`q_{\\alpha}` the studentized-range quantile at infinite degrees of freedom
     divided by :math:`\\sqrt 2`. Computing it from ``scipy.stats.studentized_range`` avoids
-    the usual lookup table, which in Demsar (2006) only goes to k=10 while we have 17.
+    the usual lookup table, which in Demsar (2006) only goes to k=10 while we have 18.
+
+    Pass ``higher_is_better=False`` for NLL / Brier / ECE; otherwise rank 1 would be
+    assigned to the *worst* calibrated model.
     """
     from scipy.stats import friedmanchisquare, studentized_range
 
-    full = mat.dropna(axis=0, how="any")
+    full = mat.dropna(axis=1, how="any")
+    dropped = [c for c in mat.columns if c not in full.columns]
+    full = full.dropna(axis=0, how="any")
     k, N = full.shape[1], full.shape[0]
     if k < 3 or N < 3:
-        return {"error": f"need >=3 models and >=3 subjects, got k={k}, N={N}"}
+        return {"error": f"need >=3 complete models and >=3 subjects, got k={k}, N={N}",
+                "dropped_models": dropped}
     stat, p = friedmanchisquare(*[full[c].to_numpy() for c in full.columns])
-    # rank 1 = best; higher metric is better for accuracy/f1/auc/kappa
-    ranks = full.rank(axis=1, ascending=False, method="average")
+    ranks = full.rank(axis=1, ascending=not higher_is_better, method="average")
     avg_ranks = ranks.mean(axis=0).sort_values()
     q_alpha = float(studentized_range.ppf(1 - alpha, k, 1e6)) / np.sqrt(2.0)
     cd = float(q_alpha * np.sqrt(k * (k + 1) / (6.0 * N)))
     return {"friedman_stat": float(stat), "friedman_p": float(p), "k": int(k), "N": int(N),
-            "avg_ranks": avg_ranks, "critical_difference": cd, "alpha": alpha}
+            "avg_ranks": avg_ranks, "critical_difference": cd, "alpha": alpha,
+            "higher_is_better": bool(higher_is_better), "dropped_models": dropped}
 
 
 def cd_diagram(avg_ranks: pd.Series, cd: float, path: str | Path,
@@ -399,7 +440,8 @@ def select_by_validation(
     rows: List[Dict] = []
     for family, members in families.items():
         present = [m for m in members if m in set(df["model"])]
-        if not present:
+        if len(present) != len(members):
+            # A 2-of-3 family mid-sweep must not become "the" representative.
             continue
         sub = df[df["model"].isin(present)]
         val = sub.groupby("model")["best_score"].mean()

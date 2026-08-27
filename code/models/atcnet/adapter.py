@@ -164,12 +164,17 @@ class ATCNetS4Config:
     # shared causal SSM replacing the 5 independent TCN branches
     s4_layers: int = 2
     s4_state_dim: int = 8
-    s4_d_ff: Optional[int] = None       # None -> no feed-forward sub-layer (keeps it tiny)
+    s4_d_ff: Optional[int] = 32         # None -> no feed-forward; 32 restores channel mix
     s4_dropout: float = 0.3
 
     # readout
     n_windows: int = 5
     fuse: str = "average"
+
+    #: Apply ATCNet's official L2 kernel penalties (conv 0.009 / dense 0.5). Keep this True:
+    #: with it off, `atcnet` vs `atcnet_s4` differs in the temporal stage AND in the
+    #: dominant regularizer (the penalty is ~17x the cross-entropy at initialization).
+    use_official_l2: bool = True
 
 
 class ATCNetS4Classifier(nn.Module):
@@ -178,11 +183,9 @@ class ATCNetS4Classifier(nn.Module):
     ``features`` is the mean of the per-readout vectors, matching what
     ``ATCNetClassifier`` reports so the two are directly comparable.
 
-    Unlike ``ATCNetClassifier`` this model has **no** Keras ``L2`` kernel penalty: those
-    constants (conv 0.009 / dense 0.5) were tuned for the official 114k-parameter model, and
-    this one is ~4.9x smaller with a different temporal stage. Carrying them over would
-    silently make the comparison a two-variable change. Plain cross-entropy, therefore
-    ``uses_custom_loss`` stays False.
+    Like ``ATCNetClassifier``, the official Keras ``L2`` kernel penalties are folded into the
+    loss through the trainer's custom-loss hook — see ``ATCNetS4.l2_penalty`` for the
+    layer-for-layer mapping and for why leaving them out would confound the ablation.
     """
 
     def __init__(self, config: ATCNetS4Config | None = None):
@@ -205,11 +208,12 @@ class ATCNetS4Classifier(nn.Module):
             s4_d_ff=cfg.s4_d_ff,
             s4_dropout=cfg.s4_dropout,
             fuse=cfg.fuse,
+            use_official_l2=cfg.use_official_l2,
         )
         self.feature_dim = int(
             cfg.eegn_F1 * cfg.eegn_D * (cfg.n_windows if cfg.fuse == "concat" else 1)
         )
-        self.uses_custom_loss = False
+        self.uses_custom_loss = bool(cfg.use_official_l2)
 
     def default_lr(self) -> float:
         return DEFAULT_LR
@@ -224,9 +228,22 @@ class ATCNetS4Classifier(nn.Module):
             "Tc": int(self.model.Tc),
             "readout_idx": list(self.model.readout_idx),
             "attention": self.config.attention,
+            "official_l2": bool(self.uses_custom_loss),
         }
         d.update(self.model.timescales())
         return d
+
+    def training_step(self, x: torch.Tensor, y: torch.Tensor, epoch: int = 0,
+                      subject_ids: Optional[torch.Tensor] = None
+                      ) -> Tuple[torch.Tensor, Dict[str, float]]:
+        """CE + the official L2 kernel penalties, exactly as ``ATCNetClassifier`` does.
+
+        ``subject_ids`` is accepted and ignored (the e2e trainer always passes the argument).
+        """
+        ce = F.cross_entropy(self.forward(x)["logits"], y)
+        l2 = self.model.l2_penalty()
+        return ce + l2, {"ce": float(ce.detach().item()),
+                         "l2": float(l2.detach().item())}
 
     def forward(self, x: torch.Tensor) -> Dict[str, object]:
         logits = self.model(x)

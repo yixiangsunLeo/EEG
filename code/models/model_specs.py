@@ -159,21 +159,21 @@ def resolve_model_params(
         raise ValueError(f"models/{base}.yaml: 'variants' must be a mapping")
     overrides = dict(experiment_params or {})
     if variant:
-        if variant in variants:
-            block = variants[variant] or {}
-            if not isinstance(block, dict):
-                raise ValueError(
-                    f"models/{base}.yaml: variants['{variant}'] must be a mapping"
-                )
-            merged.update(block)
-        elif not overrides:
-            # A typo here would silently run the plain model under an ablation's name and
+        if variant not in variants:
+            # A typo here would silently run the plain model under an ablation's name
+            # (even if the experiment config happens to carry some other override) and
             # land in the results table as if it were the ablation. Fail instead.
+            # Ad-hoc variants belong in the model's yaml, not in experiment_params.
             raise ValueError(
                 f"model alias '{name}' is not defined: models/{base}.yaml has no "
-                f"variants['{variant}'] and the experiment config provides no "
-                f"model_params['{name}']. Known variants: {sorted(variants) or 'none'}"
+                f"variants['{variant}']. Known variants: {sorted(variants) or 'none'}"
             )
+        block = variants[variant] or {}
+        if not isinstance(block, dict):
+            raise ValueError(
+                f"models/{base}.yaml: variants['{variant}'] must be a mapping"
+            )
+        merged.update(block)
 
     merged.update(overrides)
     merged.pop("name", None)
