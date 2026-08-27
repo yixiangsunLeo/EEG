@@ -164,6 +164,10 @@ find outputs/experiments/wbci_shu/wbci_2c_cross_subject_bench_v1/cells -name res
 scontrol update jobid=<id> partition=gpu3node
 ```
 
+One partition at a time: this cluster pins a partition in the association, so a list
+(`partition=gpu2node,gpu3node`) is rejected with "Multiple partition job request not
+supported". Only jobs that are still PENDING can be moved.
+
 Anything that failed is in `<out>/failures.json`, not buried in the Slurm logs.
 
 ## 6. Tables, statistics, figures
