@@ -520,6 +520,9 @@ def run_cell(
     """
     fold.assert_disjoint()
     paths = CellPaths(ckpt_dir=Path(ckpt_dir), result_json=Path(result_json))
+    # Checkpoints live under ckpt_dir, often a different tree. np.savez_compressed
+    # does not mkdir, so the cell dir (result.json / predictions.npz) must exist first.
+    paths.result_json.parent.mkdir(parents=True, exist_ok=True)
     signature = cell_signature(fold, dataset=dataset, model_name=model_name,
                                model_params=model_params, data_dims=data_dims, spec=spec,
                                protocol=protocol, val_mode=val_mode, seed=seed)

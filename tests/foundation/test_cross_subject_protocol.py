@@ -188,12 +188,15 @@ def test_cell_writes_only_best_and_last_and_reports_both(dataset, tmp_path):
     fold = make_subject_folds(sorted(sd), protocol="kfold_subject", n_folds=3,
                               split_seed=0, val_subject_fraction=0.25)[0]
     ck = tmp_path / "ckpt"
+    cell_dir = tmp_path / "cells" / "s4erp__fold0__seed0"
     rows = run_cell(sd, fold, dataset="synthetic", model_name="s4erp",
                     model_params=TINY_PARAMS, data_dims=DIMS, spec=_spec(2), seed=0,
                     device=torch.device("cpu"), ckpt_dir=ck,
-                    result_json=tmp_path / "result.json", protocol="kfold_subject")
+                    result_json=cell_dir / "result.json", protocol="kfold_subject")
 
     assert sorted(p.name for p in ck.iterdir()) == sorted([BEST_CKPT, LAST_CKPT])
+    assert (cell_dir / "predictions.npz").is_file()
+    assert (cell_dir / "result.json").is_file()
     assert len(rows) == len(fold.test_subjects)
     for r in rows:
         assert r["status"] == "ok"
@@ -203,7 +206,7 @@ def test_cell_writes_only_best_and_last_and_reports_both(dataset, tmp_path):
         assert r["n_test"] == sd[r["test_subject"]].n_trials
         assert r["n_params"] > 0
 
-    detail = json.loads((tmp_path / "result.json").read_text())
+    detail = json.loads((cell_dir / "result.json").read_text())
     assert detail["train_info"]["epochs_run"] == 2
     assert len(detail["history"]) == 2
     assert detail["fold"]["test_subjects"] == fold.test_subjects
