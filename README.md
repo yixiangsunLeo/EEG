@@ -11,6 +11,12 @@ status: "active"
 
 # EEG-MI Online
 
+**10 Hz SSVEP Oz PSD（学长交代，仓库根目录）** → [`10Hz_SSVEP_Oz_PSD.png`](10Hz_SSVEP_Oz_PSD.png)
+
+![10 Hz SSVEP Oz PSD](10Hz_SSVEP_Oz_PSD.png)
+
+数据：Wang 2016 公开 SSVEP benchmark（S1–S8，刺激 10 Hz，Oz，闪烁期 0–5 s）。预处理：平均参考、1–45 Hz、ICA 去眼电、±80 µV 剔除；Welch `n_fft=1024, n_overlap=256`；31 个有效 epoch。复现脚本：[`plot_10hz_ssvep_psd.py`](plot_10hz_ssvep_psd.py)。
+
 > 多数据集运动想象 EEG 泛化研究。**当前主线（2026-08-04 学长重新定向）= 端到端基础模型 × 跨被试**：
 > 用 5 个 S4 / DINO-DualCD 模型在 WBCIC-SHU 与 SHU 上**分开**做端到端训练 + 跨被试评测。
 > 融合已完成可运行。**正式实验已跑四批（2026-08-07 ~ 08-24），结果见
